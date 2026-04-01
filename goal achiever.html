@@ -449,7 +449,12 @@
                 setPendingSync(true);
                 updateCloudStatus("Cloud: Push Failed", "err");
                 if (showFeedback) {
-                    alert("Push failed. Ensure DB table exists (goal_app_state) and RLS policy allows upsert.");
+                    const missingTable = error.code === "PGRST205" || /could not find the table/i.test(String(error.message || ""));
+                    if (missingTable) {
+                        alert("Database table missing. In Supabase → SQL Editor, run the file supabase-schema.sql from this project, then try Push again.");
+                    } else {
+                        alert("Push failed: " + (error.message || error.code || "unknown") + "\n\nCheck RLS policies and that the table goal_app_state exists.");
+                    }
                 }
                 return;
             }
