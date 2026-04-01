@@ -84,12 +84,13 @@
         <p id="fileProtocolWarn" class="hidden mb-4 text-xs text-amber-300/95 bg-amber-950/40 border border-amber-800/60 rounded-xl px-4 py-3 leading-relaxed">
             You opened this page from disk (<code class="text-amber-200">file://</code>). Cloud sync and some APIs need a real HTTPS origin. Use your Render URL (or a local server) instead of double-clicking the HTML file.
         </p>
-        <div class="flex flex-wrap items-center gap-2 mb-6">
+        <div class="flex flex-wrap items-center gap-2 mb-2">
             <span id="cloudStatus" class="text-[11px] tracking-wider uppercase px-3 py-1 rounded-full border border-gray-700 text-gray-400 bg-black/30">Cloud: Not Connected</span>
             <button onclick="configureCloudSync()" class="px-3 py-2 text-xs font-semibold rounded-lg bg-gray-900 border border-gray-700 text-gray-200 hover:border-gray-500 transition">Configure Cloud</button>
-            <button onclick="pushLocalToCloud(true)" class="px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-900/30 border border-emerald-700/60 text-emerald-300 hover:bg-emerald-800/30 transition">Push Local -> DB</button>
-            <button onclick="pullCloudToLocal(true)" class="px-3 py-2 text-xs font-semibold rounded-lg bg-blue-900/30 border border-blue-700/60 text-blue-300 hover:bg-blue-800/30 transition">Pull DB -> Local</button>
+            <button onclick="runFullBidirectionalSync({ showFeedback: true, force: true })" class="px-3 py-2 text-xs font-semibold rounded-lg bg-blue-900/30 border border-blue-700/60 text-blue-300 hover:bg-blue-800/30 transition">Sync now</button>
+            <button onclick="pushLocalToCloud(true)" class="px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-900/30 border border-emerald-700/60 text-emerald-300 hover:bg-emerald-800/30 transition" title="Upload local data only">Upload only</button>
         </div>
+        <p class="text-[11px] text-gray-500 mb-6 max-w-3xl leading-relaxed">Progress is saved in this browser first, then synced automatically (merge from cloud + upload) about every 20s and when you come back to this tab or go online.</p>
 
         <!-- Dynamic Data Line Graph -->
         <div class="glass rounded-3xl p-6 mb-12 border border-gray-800/80 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
@@ -170,6 +171,10 @@
         let cloudSyncTimeout = null;
         let isApplyingCloudData = false;
         let hasUnsyncedChanges = false;
+        let cloudSyncInFlight = false;
+        let lastFullSyncAt = 0;
+        const AUTO_SYNC_INTERVAL_MS = 20000;
+        const FULL_SYNC_THROTTLE_MS = 8000;
 
         function hexToHsl(hex) {
             let c = hex.replace('#', '');
@@ -420,7 +425,7 @@
             localStorage.setItem("supabase_url", url);
             localStorage.setItem("supabase_anon_key", key);
             initCloudClient();
-            alert("Cloud config saved. Next: Push Local -> DB.");
+            alert("Cloud config saved. Sync runs automatically; use Sync now if you want it immediately.");
         }
 
         async function pushLocalToCloud(showFeedback = false) {
@@ -464,35 +469,15 @@
             if (showFeedback) alert("Local data pushed to database.");
         }
 
-        async function pullCloudToLocal(showFeedback = false) {
-            if (!supabaseClient) {
-                updateCloudStatus("Cloud: Configure First", "warn");
-                if (showFeedback) alert("Configure cloud first.");
-                return;
-            }
-            updateCloudStatus("Cloud: Pulling...", "warn");
-            const { data, error } = await supabaseClient
-                .from(CLOUD_TABLE)
-                .select("goals, tasks")
-                .eq("id", CLOUD_ROW_ID)
-                .maybeSingle();
-            if (error) {
-                console.error(error);
-                updateCloudStatus("Cloud: Pull Failed", "err");
-                if (showFeedback) alert("Pull failed. Verify table/policies.");
-                return;
-            }
-            if (!data) {
-                updateCloudStatus("Cloud: No Row Yet", "warn");
-                if (showFeedback) alert("No cloud data row yet. Push local data first.");
-                return;
-            }
-
+        function mergeCloudRowIntoLocal(data) {
+            if (!data) return false;
             const cloudGoals = Array.isArray(data.goals) ? data.goals : [];
             const cloudTasks = Array.isArray(data.tasks) ? data.tasks : [];
             const mergedGoals = mergeGoalsPreferLocal(goals, cloudGoals);
             const mergedTasks = mergeTasks(tasks, cloudTasks, mergedGoals, cloudGoals);
-
+            const before = JSON.stringify({ goals, tasks });
+            const after = JSON.stringify({ goals: mergedGoals, tasks: mergedTasks });
+            if (before === after) return false;
             isApplyingCloudData = true;
             goals = mergedGoals;
             tasks = mergedTasks;
@@ -500,11 +485,68 @@
             localStorage.setItem("tasks", JSON.stringify(tasks));
             normalizeTaskCompletionMetadata();
             isApplyingCloudData = false;
-            updateCloudStatus("Cloud: Synced", "ok");
             renderGoals();
             updateDateDisplay();
-            await pushLocalToCloud(false);
-            if (showFeedback) alert("Merged local + cloud data and synced merged result.");
+            return true;
+        }
+
+        async function runFullBidirectionalSync(opts = {}) {
+            const showFeedback = opts.showFeedback === true;
+            const force = opts.force === true;
+            if (!supabaseClient) {
+                updateCloudStatus("Cloud: Configure First", "warn");
+                if (showFeedback) alert("Configure cloud first.");
+                return;
+            }
+            if (!isOnline()) {
+                updateCloudStatus("Cloud: Offline (Pending)", "warn");
+                if (showFeedback) alert("Offline. Your changes stay on this device and will sync when you are online.");
+                return;
+            }
+            const now = Date.now();
+            if (!force && now - lastFullSyncAt < FULL_SYNC_THROTTLE_MS) return;
+            if (cloudSyncInFlight) return;
+            cloudSyncInFlight = true;
+            try {
+                updateCloudStatus("Cloud: Syncing...", "warn");
+                const { data, error } = await supabaseClient
+                    .from(CLOUD_TABLE)
+                    .select("goals, tasks")
+                    .eq("id", CLOUD_ROW_ID)
+                    .maybeSingle();
+                if (error) {
+                    console.error(error);
+                    updateCloudStatus("Cloud: Sync Failed", "err");
+                    if (showFeedback) alert("Sync failed: " + (error.message || error.code || "unknown"));
+                    return;
+                }
+                if (!data) {
+                    await pushLocalToCloud(false);
+                    lastFullSyncAt = Date.now();
+                    updateCloudStatus("Cloud: Synced", "ok");
+                    if (showFeedback) alert("First sync: uploaded your local data to the cloud.");
+                    return;
+                }
+                const changed = mergeCloudRowIntoLocal(data);
+                const needPush = changed || hasUnsyncedChanges || hasPendingSync();
+                if (needPush) {
+                    await pushLocalToCloud(false);
+                } else {
+                    updateCloudStatus("Cloud: Synced", "ok");
+                }
+                lastFullSyncAt = Date.now();
+                if (showFeedback) {
+                    if (changed) alert("Merged updates from cloud and saved.");
+                    else if (needPush) alert("Uploaded your latest changes to the cloud.");
+                    else alert("Already up to date with the cloud.");
+                }
+            } finally {
+                cloudSyncInFlight = false;
+            }
+        }
+
+        async function pullCloudToLocal(showFeedback = false) {
+            await runFullBidirectionalSync({ showFeedback, force: true });
         }
 
         function scheduleCloudAutosync() {
@@ -1239,9 +1281,7 @@
 
         window.addEventListener("online", () => {
             if (!supabaseClient) return;
-            updateCloudStatus("Cloud: Back Online (Syncing...)", "warn");
-            if (hasPendingSync() || hasUnsyncedChanges) pushLocalToCloud(false);
-            else updateCloudStatus("Cloud: Connected", "ok");
+            runFullBidirectionalSync({ showFeedback: false, force: true });
         });
 
         window.addEventListener("offline", () => {
@@ -1249,16 +1289,18 @@
         });
 
         document.addEventListener("visibilitychange", () => {
-            if (document.visibilityState === "visible" && supabaseClient && isOnline() && (hasPendingSync() || hasUnsyncedChanges)) {
-                pushLocalToCloud(false);
+            if (document.visibilityState === "visible" && supabaseClient && isOnline()) {
+                runFullBidirectionalSync({ showFeedback: false, force: true });
             }
         });
 
         setInterval(() => {
-            if (!supabaseClient) return;
-            if (!isOnline()) return;
-            if (hasPendingSync() || hasUnsyncedChanges) pushLocalToCloud(false);
-        }, 30000);
+            runFullBidirectionalSync({ showFeedback: false, force: false });
+        }, AUTO_SYNC_INTERVAL_MS);
+
+        setTimeout(() => {
+            runFullBidirectionalSync({ showFeedback: false, force: true });
+        }, 2000);
 
         updateDateDisplay();
     </script>
