@@ -8,6 +8,7 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Pin v3: stable category line + numeric series; avoids v4 parsing quirks with custom point shapes -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -80,6 +81,12 @@
                 </button>
             </div>
         </header>
+        <div class="flex flex-wrap items-center gap-2 mb-6">
+            <span id="cloudStatus" class="text-[11px] tracking-wider uppercase px-3 py-1 rounded-full border border-gray-700 text-gray-400 bg-black/30">Cloud: Not Connected</span>
+            <button onclick="configureCloudSync()" class="px-3 py-2 text-xs font-semibold rounded-lg bg-gray-900 border border-gray-700 text-gray-200 hover:border-gray-500 transition">Configure Cloud</button>
+            <button onclick="pushLocalToCloud(true)" class="px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-900/30 border border-emerald-700/60 text-emerald-300 hover:bg-emerald-800/30 transition">Push Local -> DB</button>
+            <button onclick="pullCloudToLocal(true)" class="px-3 py-2 text-xs font-semibold rounded-lg bg-blue-900/30 border border-blue-700/60 text-blue-300 hover:bg-blue-800/30 transition">Pull DB -> Local</button>
+        </div>
 
         <!-- Dynamic Data Line Graph -->
         <div class="glass rounded-3xl p-6 mb-12 border border-gray-800/80 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
@@ -125,6 +132,13 @@
         
         let chartInstance = null;
         let currentDate = new Date().toDateString();
+        const CLOUD_ROW_ID = "goal-achiever-main";
+        const CLOUD_TABLE = "goal_app_state";
+        const CLOUD_PENDING_KEY = "cloud_sync_pending_v1";
+        let supabaseClient = null;
+        let cloudSyncTimeout = null;
+        let isApplyingCloudData = false;
+        let hasUnsyncedChanges = false;
 
         function hexToHsl(hex) {
             let c = hex.replace('#', '');
@@ -250,6 +264,149 @@
         let goals = JSON.parse(localStorage.getItem("goals")) || [];
         let tasks = JSON.parse(localStorage.getItem("tasks")) || [];
 
+        function updateCloudStatus(text, tone = "neutral") {
+            const el = document.getElementById("cloudStatus");
+            if (!el) return;
+            el.textContent = text;
+            if (tone === "ok") el.className = "text-[11px] tracking-wider uppercase px-3 py-1 rounded-full border border-emerald-700/60 text-emerald-300 bg-emerald-900/20";
+            else if (tone === "warn") el.className = "text-[11px] tracking-wider uppercase px-3 py-1 rounded-full border border-amber-700/60 text-amber-300 bg-amber-900/20";
+            else if (tone === "err") el.className = "text-[11px] tracking-wider uppercase px-3 py-1 rounded-full border border-red-700/60 text-red-300 bg-red-900/20";
+            else el.className = "text-[11px] tracking-wider uppercase px-3 py-1 rounded-full border border-gray-700 text-gray-400 bg-black/30";
+        }
+
+        function isOnline() {
+            return typeof navigator === "undefined" ? true : navigator.onLine;
+        }
+
+        function setPendingSync(flag) {
+            localStorage.setItem(CLOUD_PENDING_KEY, flag ? "true" : "false");
+        }
+
+        function hasPendingSync() {
+            return localStorage.getItem(CLOUD_PENDING_KEY) === "true";
+        }
+
+        function initCloudClient() {
+            const url = localStorage.getItem("supabase_url");
+            const key = localStorage.getItem("supabase_anon_key");
+            if (!url || !key) {
+                supabaseClient = null;
+                updateCloudStatus("Cloud: Not Connected", "neutral");
+                return false;
+            }
+            try {
+                supabaseClient = window.supabase.createClient(url, key);
+                if (!isOnline()) updateCloudStatus("Cloud: Offline (Pending)", "warn");
+                else if (hasPendingSync()) updateCloudStatus("Cloud: Connected (Pending Push)", "warn");
+                else updateCloudStatus("Cloud: Connected", "ok");
+                return true;
+            } catch (e) {
+                console.error("Supabase init failed:", e);
+                supabaseClient = null;
+                updateCloudStatus("Cloud: Invalid Config", "err");
+                return false;
+            }
+        }
+
+        function configureCloudSync() {
+            const currentUrl = localStorage.getItem("supabase_url") || "";
+            const currentKey = localStorage.getItem("supabase_anon_key") || "";
+            const url = prompt("Supabase Project URL:", currentUrl);
+            if (!url) return;
+            const key = prompt("Supabase ANON key (not service role):", currentKey);
+            if (!key) return;
+            localStorage.setItem("supabase_url", url.trim());
+            localStorage.setItem("supabase_anon_key", key.trim());
+            initCloudClient();
+            alert("Cloud config saved. Next: click 'Push Local -> DB' to upload your current data.");
+        }
+
+        async function pushLocalToCloud(showFeedback = false) {
+            if (!supabaseClient) {
+                updateCloudStatus("Cloud: Configure First", "warn");
+                if (showFeedback) alert("Configure cloud first.");
+                return;
+            }
+            if (!isOnline()) {
+                setPendingSync(true);
+                hasUnsyncedChanges = true;
+                updateCloudStatus("Cloud: Offline (Pending)", "warn");
+                if (showFeedback) alert("Offline now. Changes are saved locally and will auto-sync when online.");
+                return;
+            }
+            updateCloudStatus("Cloud: Syncing Up...", "warn");
+            const payload = {
+                id: CLOUD_ROW_ID,
+                goals: goals,
+                tasks: tasks,
+                updated_at: new Date().toISOString()
+            };
+            const { error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" });
+            if (error) {
+                console.error(error);
+                setPendingSync(true);
+                updateCloudStatus("Cloud: Push Failed", "err");
+                if (showFeedback) {
+                    alert("Push failed. Ensure DB table exists (goal_app_state) and RLS policy allows upsert.");
+                }
+                return;
+            }
+            setPendingSync(false);
+            hasUnsyncedChanges = false;
+            updateCloudStatus("Cloud: Synced", "ok");
+            if (showFeedback) alert("Local data pushed to database.");
+        }
+
+        async function pullCloudToLocal(showFeedback = false) {
+            if (!supabaseClient) {
+                updateCloudStatus("Cloud: Configure First", "warn");
+                if (showFeedback) alert("Configure cloud first.");
+                return;
+            }
+            updateCloudStatus("Cloud: Pulling...", "warn");
+            const { data, error } = await supabaseClient
+                .from(CLOUD_TABLE)
+                .select("goals, tasks")
+                .eq("id", CLOUD_ROW_ID)
+                .maybeSingle();
+            if (error) {
+                console.error(error);
+                updateCloudStatus("Cloud: Pull Failed", "err");
+                if (showFeedback) alert("Pull failed. Verify table/policies.");
+                return;
+            }
+            if (!data) {
+                updateCloudStatus("Cloud: No Row Yet", "warn");
+                if (showFeedback) alert("No cloud data row yet. Push local data first.");
+                return;
+            }
+            isApplyingCloudData = true;
+            goals = Array.isArray(data.goals) ? data.goals : [];
+            tasks = Array.isArray(data.tasks) ? data.tasks : [];
+            localStorage.setItem("goals", JSON.stringify(goals));
+            localStorage.setItem("tasks", JSON.stringify(tasks));
+            normalizeTaskCompletionMetadata();
+            isApplyingCloudData = false;
+            updateCloudStatus("Cloud: Synced", "ok");
+            renderGoals();
+            updateDateDisplay();
+            if (showFeedback) alert("Database data loaded locally.");
+        }
+
+        function scheduleCloudAutosync() {
+            if (!supabaseClient || isApplyingCloudData) return;
+            hasUnsyncedChanges = true;
+            setPendingSync(true);
+            if (!isOnline()) {
+                updateCloudStatus("Cloud: Offline (Pending)", "warn");
+                return;
+            }
+            if (cloudSyncTimeout) clearTimeout(cloudSyncTimeout);
+            cloudSyncTimeout = setTimeout(() => {
+                pushLocalToCloud(false);
+            }, 800);
+        }
+
         function normalizeTaskCompletionMetadata() {
             let changed = false;
             tasks.forEach((task) => {
@@ -299,8 +456,8 @@
             return String(d.getFullYear());
         }
 
-        function saveGoals() { localStorage.setItem("goals", JSON.stringify(goals)); updateChart(); }
-        function saveTasks() { localStorage.setItem("tasks", JSON.stringify(tasks)); updateChart(); }
+        function saveGoals() { localStorage.setItem("goals", JSON.stringify(goals)); updateChart(); scheduleCloudAutosync(); }
+        function saveTasks() { localStorage.setItem("tasks", JSON.stringify(tasks)); updateChart(); scheduleCloudAutosync(); }
 
         function getDateKey(dateObj) {
             return new Date(dateObj).toDateString();
@@ -830,6 +987,31 @@
             lucide.createIcons();
             updateChart(); // Ensure chart syncs on every render
         }
+
+        initCloudClient();
+
+        window.addEventListener("online", () => {
+            if (!supabaseClient) return;
+            updateCloudStatus("Cloud: Back Online (Syncing...)", "warn");
+            if (hasPendingSync() || hasUnsyncedChanges) pushLocalToCloud(false);
+            else updateCloudStatus("Cloud: Connected", "ok");
+        });
+
+        window.addEventListener("offline", () => {
+            updateCloudStatus("Cloud: Offline (Pending)", "warn");
+        });
+
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible" && supabaseClient && isOnline() && (hasPendingSync() || hasUnsyncedChanges)) {
+                pushLocalToCloud(false);
+            }
+        });
+
+        setInterval(() => {
+            if (!supabaseClient) return;
+            if (!isOnline()) return;
+            if (hasPendingSync() || hasUnsyncedChanges) pushLocalToCloud(false);
+        }, 30000);
 
         updateDateDisplay();
     </script>
