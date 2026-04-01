@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Protocol Zero | Execution Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Pin v3: stable category line + numeric series; avoids v4 parsing quirks with custom point shapes -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+        
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #030712; 
+            color: #f9fafb; 
+            min-height: 100vh;
+        }
+        
+        .glass { 
+            background: rgba(17, 24, 39, 0.7); 
+            backdrop-filter: blur(16px); 
+            border: 1px solid rgba(255, 255, 255, 0.05); 
+        }
+        
+        .goal-card { transition: all 0.3s ease; }
+        .goal-card:hover { transform: translateY(-2px); box-shadow: 0 15px 40px -10px rgba(0,0,0,0.9); }
+        
+        .custom-checkbox {
+            appearance: none; width: 22px; height: 22px; 
+            border: 2px solid #4b5563; border-radius: 6px; 
+            outline: none; cursor: pointer; transition: all 0.2s;
+            background: rgba(0,0,0,0.3); flex-shrink: 0;
+        }
+        .custom-checkbox:hover { border-color: #9ca3af; }
+        .custom-checkbox:checked { background-color: var(--goal-color, #10b981); border-color: var(--goal-color, #10b981); }
+        .custom-checkbox:checked::after {
+            content: ''; position: absolute; left: 7px; top: 3px; width: 5px; height: 11px;
+            border: solid white; border-width: 0 2px 2px 0; transform: rotate(45deg);
+        }
+        
+        .subgoal-line {
+            position: absolute; left: 0px; top: 0; bottom: 0; width: 3px;
+            background: var(--goal-color); opacity: 0.6; border-radius: 2px;
+        }
+
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #030712; }
+        ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+    </style>
+</head>
+<body class="pb-32 relative overflow-x-hidden">
+
+    <div class="fixed top-[-10%] left-[-10%] w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-[120px] pointer-events-none -z-10"></div>
+    <div class="fixed bottom-[10%] right-[-10%] w-[600px] h-[600px] bg-purple-600/10 rounded-full blur-[150px] pointer-events-none -z-10"></div>
+
+    <div class="max-w-6xl mx-auto pt-10 px-6">
+        
+        <header class="flex flex-col md:flex-row md:justify-between md:items-end mb-8 space-y-4 md:space-y-0">
+            <div>
+                <h1 class="text-5xl font-extrabold tracking-tight text-white mb-2 flex items-center gap-4">
+                    <i data-lucide="zap" class="w-10 h-10 text-yellow-500"></i>
+                    Protocol <span class="text-transparent bg-clip-text bg-gradient-to-r from-gray-500 to-gray-700">Zero</span>
+                </h1>
+                <p class="text-gray-400 text-sm tracking-widest uppercase font-semibold">Macro Ecosystem Architecture</p>
+            </div>
+            
+            <div class="glass flex items-center space-x-2 px-3 py-2 rounded-2xl relative border border-gray-800 shadow-2xl">
+                <button onclick="prevDay()" class="p-2 hover:bg-gray-800 rounded-xl text-gray-400 hover:text-white transition">
+                    <i data-lucide="chevron-left" class="w-5 h-5"></i>
+                </button>
+                <div class="flex flex-col items-center justify-center min-w-[160px] relative overflow-hidden group">
+                    <span id="currentDateLabels" class="font-bold text-sm text-gray-200 tracking-wide"></span>
+                    <input type="date" id="datePicker" onchange="goToDate(this.value)" class="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10">
+                </div>
+                <button onclick="nextDay()" class="p-2 hover:bg-gray-800 rounded-xl text-gray-400 hover:text-white transition">
+                    <i data-lucide="chevron-right" class="w-5 h-5"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Dynamic Data Line Graph -->
+        <div class="glass rounded-3xl p-6 mb-12 border border-gray-800/80 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
+            <div class="flex items-center justify-between gap-4 mb-4">
+                <h3 class="text-gray-400 text-xs font-bold tracking-widest uppercase flex items-center gap-2">
+                    <i data-lucide="trending-up" class="w-4 h-4 text-emerald-400"></i> Execution Trajectory (Hover Points for Details)
+                </h3>
+                <select id="chartGranularity" onchange="updateChart()" class="bg-gray-900/80 border border-gray-700 text-gray-200 text-xs font-semibold tracking-wider uppercase rounded-lg px-3 py-2 outline-none focus:border-gray-500">
+                    <option value="hourly">Hourly</option>
+                    <option value="daily" selected>Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="yearly">Yearly</option>
+                </select>
+            </div>
+            <div class="w-full h-64">
+                <canvas id="velocityChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Add Goal Input -->
+        <div class="glass rounded-2xl p-2 pl-4 mb-10 flex gap-4 items-center border border-gray-800 focus-within:border-gray-500 transition-colors shadow-xl">
+            <i data-lucide="target" class="w-6 h-6 text-gray-500"></i>
+            <input type="text" id="goalInput" placeholder="Initialize Macro Directive (New Yearly Goal)..." 
+                class="flex-1 bg-transparent border-none outline-none text-xl font-semibold text-white placeholder-gray-700"
+                onkeypress="if(event.key === 'Enter') addGoal()">
+            <button onclick="addGoal()" class="bg-white text-black px-8 py-4 rounded-xl font-bold hover:bg-gray-200 transition shadow-[0_0_20px_rgba(255,255,255,0.2)] flex items-center gap-2">
+                Deploy <i data-lucide="rocket" class="w-5 h-5"></i>
+            </button>
+        </div>
+
+        <div id="goalList" class="grid grid-cols-1 md:grid-cols-2 gap-8 items-start"></div>
+    </div>
+
+    <!-- Logic -->
+    <script>
+        const goalColors = [
+            "#ef4444", "#f97316", "#f59e0b", "#eab308", 
+            "#84cc16", "#22c55e", "#10b981", "#14b8a6", 
+            "#06b6d4", "#0ea5e9", "#3b82f6", "#6366f1", 
+            "#8b5cf6", "#a855f7", "#d946ef", "#ec4899", "#f43f5e"
+        ];
+        
+        let chartInstance = null;
+        let currentDate = new Date().toDateString();
+
+        function hexToHsl(hex) {
+            let c = hex.replace('#', '');
+            if (c.length === 3) c = c.split('').map(ch => ch + ch).join('');
+            const r = parseInt(c.substring(0, 2), 16) / 255;
+            const g = parseInt(c.substring(2, 4), 16) / 255;
+            const b = parseInt(c.substring(4, 6), 16) / 255;
+
+            const max = Math.max(r, g, b);
+            const min = Math.min(r, g, b);
+            let h = 0, s = 0;
+            const l = (max + min) / 2;
+
+            if (max !== min) {
+                const d = max - min;
+                s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                switch (max) {
+                    case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                    case g: h = (b - r) / d + 2; break;
+                    case b: h = (r - g) / d + 4; break;
+                }
+                h /= 6;
+            }
+
+            return { h: h * 360, s: s * 100, l: l * 100 };
+        }
+
+        function hslToHex(h, s, l) {
+            s /= 100;
+            l /= 100;
+
+            const c = (1 - Math.abs(2 * l - 1)) * s;
+            const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+            const m = l - c / 2;
+            let r = 0, g = 0, b = 0;
+
+            if (h >= 0 && h < 60) { r = c; g = x; b = 0; }
+            else if (h < 120) { r = x; g = c; b = 0; }
+            else if (h < 180) { r = 0; g = c; b = x; }
+            else if (h < 240) { r = 0; g = x; b = c; }
+            else if (h < 300) { r = x; g = 0; b = c; }
+            else { r = c; g = 0; b = x; }
+
+            const toHex = (val) => {
+                const hex = Math.round((val + m) * 255).toString(16).padStart(2, '0');
+                return hex;
+            };
+
+            return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+        }
+
+        function getSubgoalColor(goalColor, subIndex, totalSubgoals) {
+            const { h, s, l } = hexToHsl(goalColor);
+            const safeTotal = Math.max(totalSubgoals, 1);
+            const ratio = safeTotal === 1 ? 0.5 : subIndex / (safeTotal - 1);
+            const lightnessShift = -14 + (ratio * 28);
+            const saturationShift = -8 + (ratio * 16);
+            const nextS = Math.max(35, Math.min(95, s + saturationShift));
+            const nextL = Math.max(25, Math.min(75, l + lightnessShift));
+            return hslToHex(h, nextS, nextL);
+        }
+
+        // MASSIVE DOMAIN MIGRATION (V9: HOOPIFY REALIGNMENT)
+        if (!localStorage.getItem("system_migrated_v9")) {
+            localStorage.setItem("goals", "[]");
+            localStorage.setItem("tasks", "[]");
+
+            const exactGoals = [
+                { title: "Have 1M real human subscribers on YouTube by december 31st 2026", color: "#ef4444", subgoals: [] },       
+                { title: "Have 1M real human IG followers on @stayylito by december 31st 2026", color: "#ec4899", subgoals: [] }, 
+                { title: "Have 1M real human followers on threads @stayylito by december 31st 2026", color: "#a855f7", subgoals: [] },   
+                { title: "Have 1M real human followers on X on @stayylito by december 31st 2026", color: "#3b82f6", subgoals: [
+                    { text: "Content Omnipresence & Outreach", history: [] }
+                ]},  
+                { title: "Have 1M real human followers on Twitch on @itslitooooo by december 31st 2026", color: "#8b5cf6", subgoals: [] },  
+                { title: "Make Hoopify a $1B usd valuation company by december 31st 2026", color: "#f59e0b", subgoals: [
+                    { text: "Hoopify Baseline Progress", history: [] },
+                    { text: "Elite Cadet Protocol Camp (Credibility)", history: [] }
+                ]},       
+                { title: "Have $1B in usd after taxes and expenses saved in my bank accounts, digital wallets, cash by december 31st 2026", color: "#10b981", subgoals: [] }, 
+                { title: "Have 1 trillion of USD in assets by december 31st 2026 (businesses, real estate, infrastructures etc.)", color: "#eab308", subgoals: [
+                    { text: "LitoClips Growth Engine (Cashflow)", history: [] },
+                    { text: "Relativistic Networks (Infrastructure)", history: [] }
+                ]},      
+                { title: "Get contacted to be the starting point guard for Team Canada's Basketball Team for the 2028 Olympics in LA", color: "#0ea5e9", subgoals: [] },    
+                { title: "Win grammy's in the 2027 grammy's in February", color: "#f43f5e", subgoals: [] },               
+                { title: "Long-Term Legacy Building", color: "#d946ef", subgoals: [] }                    
+            ];
+
+            const exactTasks = [
+                // INDEX 3: X FOLLOWERS
+                { text: "DM David Senra about clipping industry & Amazon scale", goalIndex: 3, subIndex: 0, date: currentDate, done: false, completedDate: null },
+
+                // INDEX 5: HOOPIFY $1B VALUATION
+                // SubIndex 0 = Hoopify Baseline Progress
+                { text: "Advance in hoopify", goalIndex: 5, subIndex: 0, date: currentDate, done: false, completedDate: null },
+                { text: "Answer tateala for GLP", goalIndex: 5, subIndex: 0, date: currentDate, done: false, completedDate: null },
+                // SubIndex 1 = Elite Cadet Protocol Camp
+                { text: "Call Montreal Polyvalentes to secure $50/hour rate", goalIndex: 5, subIndex: 1, date: currentDate, done: false, completedDate: null },
+                { text: "Print 50 minimal black flyers", goalIndex: 5, subIndex: 1, date: currentDate, done: false, completedDate: null },
+                { text: "Hand out flyers at weekend local AAA tournament", goalIndex: 5, subIndex: 1, date: currentDate, done: false, completedDate: null },
+                { text: "Draft OSBL/Non-profit forms just in case", goalIndex: 5, subIndex: 1, date: currentDate, done: false, completedDate: null },
+
+                // INDEX 7: $1 TRILLION USD ASSETS (LitoClips + Relativistic)
+                // SubIndex 0 = LitoClips
+                { text: "Make the tracker for the LITOCLIPS", goalIndex: 7, subIndex: 0, date: currentDate, done: true, completedDate: currentDate },
+                { text: "Make organized google doc for the client, share with johnny too", goalIndex: 7, subIndex: 0, date: currentDate, done: true, completedDate: currentDate },
+                { text: "Ask them their Crypto wallet", goalIndex: 7, subIndex: 0, date: currentDate, done: false, completedDate: null },
+                { text: "Work backward from the customer for them", goalIndex: 7, subIndex: 0, date: currentDate, done: false, completedDate: null },
+                { text: "Work backwards from the customer for the clippers", goalIndex: 7, subIndex: 0, date: currentDate, done: false, completedDate: null },
+                { text: "Find Omer Khan newest video & cut 45-second MRR clip", goalIndex: 7, subIndex: 0, date: currentDate, done: false, completedDate: null },
+                { text: "DM 'Oprah Overwhelm' pitch to Rob Walling", goalIndex: 7, subIndex: 0, date: currentDate, done: false, completedDate: null },
+                // SubIndex 1 = Relativistic Networks
+                { text: "Deploy IEDR_Token.sol to Sepolia Base Testnet", goalIndex: 7, subIndex: 1, date: currentDate, done: false, completedDate: null },
+                { text: "Run `web3_oracle_engine.py` trial script", goalIndex: 7, subIndex: 1, date: currentDate, done: false, completedDate: null }
+            ];
+
+            localStorage.setItem("goals", JSON.stringify(exactGoals));
+            localStorage.setItem("tasks", JSON.stringify(exactTasks));
+            localStorage.setItem("system_migrated_v9", "true");
+        }
+
+        let goals = JSON.parse(localStorage.getItem("goals")) || [];
+        let tasks = JSON.parse(localStorage.getItem("tasks")) || [];
+
+        function normalizeTaskCompletionMetadata() {
+            let changed = false;
+            tasks.forEach((task) => {
+                if (!task.done) return;
+                // Only backfill — never strip fields here (avoids accidental data loss; unchecked clears in toggleTask).
+                if (!task.completedDate) {
+                    task.completedDate = task.date || currentDate;
+                    changed = true;
+                }
+                if (!task.completedAt && task.completedDate) {
+                    const inferred = new Date(task.completedDate);
+                    if (!isNaN(inferred.getTime())) {
+                        inferred.setHours(12, 0, 0, 0);
+                        task.completedAt = inferred.toISOString();
+                        changed = true;
+                    }
+                }
+            });
+            if (changed) localStorage.setItem("tasks", JSON.stringify(tasks));
+        }
+        normalizeTaskCompletionMetadata();
+
+        /** Local calendar keys so chart buckets match completions (fixes UTC vs local mismatch). */
+        function localYMDKey(dateVal) {
+            const d = new Date(dateVal);
+            if (isNaN(d.getTime())) return null;
+            const y = d.getFullYear();
+            const mo = d.getMonth() + 1;
+            const day = d.getDate();
+            return `${y}-${String(mo).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        }
+        function weekStartLocal(dateVal) {
+            const s = new Date(dateVal);
+            if (isNaN(s.getTime())) return null;
+            s.setHours(0, 0, 0, 0);
+            s.setDate(s.getDate() - s.getDay());
+            return s;
+        }
+        function monthKeyLocal(dateVal) {
+            const d = new Date(dateVal);
+            if (isNaN(d.getTime())) return null;
+            return `${d.getFullYear()}-${d.getMonth()}`;
+        }
+        function yearKeyLocal(dateVal) {
+            const d = new Date(dateVal);
+            if (isNaN(d.getTime())) return null;
+            return String(d.getFullYear());
+        }
+
+        function saveGoals() { localStorage.setItem("goals", JSON.stringify(goals)); updateChart(); }
+        function saveTasks() { localStorage.setItem("tasks", JSON.stringify(tasks)); updateChart(); }
+
+        function getDateKey(dateObj) {
+            return new Date(dateObj).toDateString();
+        }
+
+        function getTaskCompletionDateObj(task) {
+            if (task.completedAt) {
+                const d = new Date(task.completedAt);
+                if (!isNaN(d.getTime())) return d;
+            }
+            if (task.completedDate) {
+                const d = new Date(task.completedDate);
+                if (!isNaN(d.getTime())) return d;
+            }
+            if (task.done && task.date) {
+                const d = new Date(task.date);
+                if (!isNaN(d.getTime())) return d;
+            }
+            return null;
+        }
+
+        function resolveGoalIndex(task) {
+            const g = task.goalIndex;
+            if (g === undefined || g === null) return -1;
+            const n = typeof g === "number" ? g : parseInt(g, 10);
+            return isNaN(n) ? -1 : n;
+        }
+
+        function isSameLocalCalendarDay(dateVal, currentDateStr) {
+            const a = new Date(dateVal);
+            const b = new Date(currentDateStr);
+            if (isNaN(a.getTime()) || isNaN(b.getTime())) return false;
+            return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+        }
+
+        /** Hours since local midnight (7:30 → 7.5, 7:48 → 7.8). */
+        function localFractionalHourSinceMidnight(dateVal) {
+            const x = new Date(dateVal);
+            if (isNaN(x.getTime())) return null;
+            return x.getHours() + x.getMinutes() / 60 + x.getSeconds() / 3600 + x.getMilliseconds() / 3600000;
+        }
+
+        function timeLabelFromFractionalHour(frac, dayAnchorStr) {
+            const d = new Date(dayAnchorStr);
+            if (isNaN(d.getTime())) return "";
+            d.setHours(0, 0, 0, 0);
+            d.setTime(d.getTime() + frac * 3600000);
+            return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
+        }
+
+        function getCompletionISOForCurrentDate() {
+            const selectedDate = new Date(currentDate);
+            const todayKey = new Date().toDateString();
+            if (selectedDate.toDateString() === todayKey) {
+                return new Date().toISOString();
+            }
+            const noon = new Date(selectedDate);
+            noon.setHours(12, 0, 0, 0);
+            return noon.toISOString();
+        }
+
+        function updateDateDisplay() {
+            const d = new Date(currentDate);
+            const options = { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' };
+            document.getElementById("currentDateLabels").innerText = d.toLocaleDateString('en-US', options).toUpperCase();
+            document.getElementById("datePicker").value = new Date(currentDate).toISOString().split('T')[0];
+            renderGoals();
+            updateChart();
+        }
+
+        function prevDay() { currentDate = new Date(new Date(currentDate).setDate(new Date(currentDate).getDate()-1)).toDateString(); updateDateDisplay(); }
+        function nextDay() { currentDate = new Date(new Date(currentDate).setDate(new Date(currentDate).getDate()+1)).toDateString(); updateDateDisplay(); }
+        function goToDate(val) { currentDate = new Date(val).toDateString(); updateDateDisplay(); }
+
+        function addGoal() {
+            let input = document.getElementById("goalInput"); let text = input.value.trim();
+            if(!text) return;
+            let color = goalColors[goals.length % goalColors.length];
+            goals.push({title: text, subgoals: [], color: color});
+            input.value = ""; saveGoals(); renderGoals();
+        }
+        function editGoal(i) { let t = prompt("Edit Directive:", goals[i].title); if(t) { goals[i].title=t; saveGoals(); renderGoals(); } }
+        function deleteGoal(i) { if(confirm("Terminate this directive? All tasks lost.")) { goals.splice(i,1); saveGoals(); renderGoals(); } }
+        
+        function addSubGoal(gIdx) { let t = prompt("Define Key Result (Sub-goal):"); if(t) { goals[gIdx].subgoals.push({text:t, history:[]}); saveGoals(); renderGoals(); } }
+        function editSubGoal(gIdx, sIdx) { let t = prompt("Edit Key Result:", goals[gIdx].subgoals[sIdx].text); if(t) { goals[gIdx].subgoals[sIdx].text=t; saveGoals(); renderGoals(); } }
+        function deleteSubGoal(gIdx, sIdx) { if(confirm("Remove Key Result?")) { goals[gIdx].subgoals.splice(sIdx,1); saveGoals(); renderGoals(); } }
+
+        function addTask(gIdx, sIdx=null) {
+            let inputId = sIdx===null ? `task-${gIdx}-main` : `task-${gIdx}-${sIdx}`;
+            let input = document.getElementById(inputId); let text = input.value.trim();
+            if(!text) return;
+            tasks.push({text: text, goalIndex: gIdx, subIndex: sIdx, date: currentDate, done: false, completedDate: null});
+            input.value = ""; saveTasks(); renderGoals();
+        }
+        function editTask(i) { let t = prompt("Edit execution task:", tasks[i].text); if(t) { tasks[i].text=t; saveTasks(); renderGoals(); } }
+        function deleteTask(i) { if(confirm("Delete task?")) { tasks.splice(i,1); saveTasks(); renderGoals(); } }
+        
+        function toggleTask(i) { 
+            tasks[i].done = !tasks[i].done; 
+            if(tasks[i].done) {
+                tasks[i].completedDate = currentDate;
+                tasks[i].completedAt = getCompletionISOForCurrentDate();
+            } else {
+                tasks[i].completedDate = null;
+                tasks[i].completedAt = null;
+            }
+            saveTasks(); 
+            renderGoals();
+        }
+
+        // DEEP ANALYTICS LINE GRAPH WITH HOVER TOOLTIPS (hourly = scatter on fractional time axis)
+        function updateChart() {
+            const ctx = document.getElementById('velocityChart').getContext('2d');
+
+            const granularity = (document.getElementById("chartGranularity") || {}).value || "daily";
+            const baseDate = new Date(currentDate);
+
+            if (granularity === "hourly") {
+                if (chartInstance && chartInstance.config.type !== "scatter") {
+                    chartInstance.destroy();
+                    chartInstance = null;
+                }
+
+                const dayAnchor = new Date(currentDate);
+                const datasetsScatter = goals.map((g, idx) => {
+                    const events = [];
+                    tasks.forEach((t) => {
+                        if (!t.done) return;
+                        if (resolveGoalIndex(t) !== idx) return;
+                        let cd = getTaskCompletionDateObj(t);
+                        if (!cd || isNaN(cd.getTime())) {
+                            if (t.completedDate) {
+                                cd = new Date(t.completedDate);
+                                cd.setHours(12, 0, 0, 0);
+                            } else return;
+                        }
+                        if (!isSameLocalCalendarDay(cd, currentDate)) return;
+                        const xh = localFractionalHourSinceMidnight(cd);
+                        if (xh == null) return;
+                        events.push({ time: xh, text: t.text || "" });
+                    });
+                    events.sort((a, b) => a.time - b.time);
+                    const data = events.map((e, i) => ({
+                        x: e.time,
+                        y: i + 1,
+                        _task: e.text
+                    }));
+                    return {
+                        label: g.title,
+                        data: data,
+                        borderColor: g.color,
+                        backgroundColor: g.color,
+                        showLine: true,
+                        tension: 0,
+                        borderWidth: 2,
+                        pointRadius: 5,
+                        pointHoverRadius: 8,
+                        fill: false
+                    };
+                });
+
+                let maxY = 0;
+                datasetsScatter.forEach((ds) => {
+                    if (ds.data.length) maxY = Math.max(maxY, ds.data[ds.data.length - 1].y);
+                });
+                const ySuggestedMax = Math.max(3, maxY + 1);
+
+                const scatterOptions = {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: "nearest", intersect: true },
+                    scales: {
+                        x: {
+                            type: "linear",
+                            min: 0,
+                            max: 24,
+                            grid: { color: "rgba(255,255,255,0.05)" },
+                            ticks: {
+                                color: "#9ca3af",
+                                stepSize: 1,
+                                maxRotation: 0,
+                                callback: function (value) {
+                                    if (Math.abs(value - Math.round(value)) > 1e-6) return "";
+                                    const d = new Date(dayAnchor);
+                                    d.setHours(0, 0, 0, 0);
+                                    d.setHours(value, 0, 0, 0);
+                                    return d.toLocaleTimeString("en-US", { hour: "numeric" });
+                                }
+                            },
+                            title: { display: true, text: "Time (local, sub-hour precision)", color: "#6b7280", font: { size: 11 } }
+                        },
+                        y: {
+                            grid: { color: "rgba(255,255,255,0.05)" },
+                            beginAtZero: true,
+                            suggestedMax: ySuggestedMax,
+                            ticks: { stepSize: 1, color: "#9ca3af" },
+                            title: { display: true, text: "Cumulative completions (day)", color: "#6b7280", font: { size: 11 } }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: "rgba(0,0,0,0.9)",
+                            titleFont: { size: 14, family: "Inter" },
+                            bodyFont: { size: 13, family: "Inter" },
+                            padding: 12,
+                            boxPadding: 6,
+                            callbacks: {
+                                title: function (items) {
+                                    if (!items.length) return "";
+                                    const raw = items[0].raw;
+                                    const x = raw && typeof raw.x === "number" ? raw.x : items[0].parsed.x;
+                                    return timeLabelFromFractionalHour(x, currentDate);
+                                },
+                                label: function (context) {
+                                    const raw = context.raw;
+                                    const task = raw && raw._task ? raw._task : "";
+                                    const snippet = task.length > 48 ? task.substring(0, 48) + "…" : task;
+                                    return [`${context.dataset.label} (#${context.parsed.y})`, snippet ? `  → ${snippet}` : ""].filter(Boolean);
+                                }
+                            }
+                        }
+                    }
+                };
+
+                if (chartInstance && chartInstance.config.type === "scatter") {
+                    chartInstance.data.datasets = datasetsScatter;
+                    chartInstance.options.scales.y.suggestedMax = ySuggestedMax;
+                    chartInstance.update("none");
+                } else {
+                    if (chartInstance) chartInstance.destroy();
+                    chartInstance = new Chart(ctx, {
+                        type: "scatter",
+                        data: { datasets: datasetsScatter },
+                        options: scatterOptions
+                    });
+                }
+                return;
+            }
+
+            if (chartInstance && chartInstance.config.type !== "line") {
+                chartInstance.destroy();
+                chartInstance = null;
+            }
+
+            const buckets = [];
+            let bucketFormatter = () => "";
+            let bucketKeyGetter = () => "";
+
+            if (granularity === "daily") {
+                for(let i = 13; i >= 0; i--) {
+                    const d = new Date(baseDate);
+                    d.setDate(d.getDate() - i);
+                    d.setHours(0, 0, 0, 0);
+                    buckets.push(d);
+                }
+                bucketFormatter = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                bucketKeyGetter = (d) => localYMDKey(d);
+            } else if (granularity === "weekly") {
+                const anchor = new Date(baseDate);
+                anchor.setHours(0, 0, 0, 0);
+                const day = anchor.getDay();
+                anchor.setDate(anchor.getDate() - day);
+                for(let i = 11; i >= 0; i--) {
+                    const d = new Date(anchor);
+                    d.setDate(d.getDate() - (i * 7));
+                    buckets.push(d);
+                }
+                bucketFormatter = (d) => `Wk ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+                bucketKeyGetter = (d) => {
+                    const ws = weekStartLocal(d);
+                    return ws ? localYMDKey(ws) : null;
+                };
+            } else if (granularity === "monthly") {
+                for(let i = 11; i >= 0; i--) {
+                    const d = new Date(baseDate.getFullYear(), baseDate.getMonth() - i, 1);
+                    d.setHours(0, 0, 0, 0);
+                    buckets.push(d);
+                }
+                bucketFormatter = (d) => d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+                bucketKeyGetter = (d) => monthKeyLocal(d);
+            } else {
+                for(let i = 5; i >= 0; i--) {
+                    const d = new Date(baseDate.getFullYear() - i, 0, 1);
+                    d.setHours(0, 0, 0, 0);
+                    buckets.push(d);
+                }
+                bucketFormatter = (d) => d.getFullYear().toString();
+                bucketKeyGetter = (d) => yearKeyLocal(d);
+            }
+
+            let datasetsObj = {}; 
+            
+            goals.forEach((g, idx) => {
+                const hoverTaskLists = buckets.map(() => []);
+                datasetsObj[idx] = {
+                    label: g.title,
+                    borderColor: g.color,
+                    backgroundColor: g.color + '40', // transparent fill
+                    borderWidth: 3,
+                    pointBackgroundColor: g.color,
+                    pointRadius: 4,
+                    pointHoverRadius: 8,
+                    tension: 0.3, // smooth curves
+                    fill: false,
+                    data: buckets.map(() => 0),
+                    hoverTaskLists: hoverTaskLists
+                };
+            });
+
+            const bucketIndexByKey = {};
+            buckets.forEach((b, i) => {
+                const k = bucketKeyGetter(b);
+                if (k != null) bucketIndexByKey[k] = i;
+            });
+
+            let maxY = 0;
+            tasks.forEach(t => {
+                if (!t.done) return;
+                const gIdx = resolveGoalIndex(t);
+                if (gIdx < 0 || !goals[gIdx] || !datasetsObj[gIdx]) return;
+
+                let completedObj = getTaskCompletionDateObj(t);
+                if (!completedObj || isNaN(completedObj.getTime())) {
+                    if (t.completedDate) {
+                        completedObj = new Date(t.completedDate);
+                        completedObj.setHours(12, 0, 0, 0);
+                    } else return;
+                }
+                const key = bucketKeyGetter(completedObj);
+                if (key == null) return;
+                const idx = bucketIndexByKey[key];
+                if (idx === undefined) return;
+
+                datasetsObj[gIdx].data[idx] += 1;
+                datasetsObj[gIdx].hoverTaskLists[idx].push(t.text || "");
+                maxY = Math.max(maxY, datasetsObj[gIdx].data[idx]);
+            });
+
+            const datasetsInfo = Object.values(datasetsObj);
+            const displayLabels = buckets.map(bucketFormatter);
+            const ySuggestedMax = Math.max(5, maxY + 1);
+
+            if (chartInstance) {
+                chartInstance.data.labels = displayLabels;
+                chartInstance.data.datasets = datasetsInfo;
+                if (chartInstance.options.scales && chartInstance.options.scales.y) {
+                    chartInstance.options.scales.y.suggestedMax = ySuggestedMax;
+                }
+                chartInstance.update('none');
+            } else {
+                chartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels: displayLabels, datasets: datasetsInfo },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                        scales: {
+                            x: { grid: { color: 'rgba(255,255,255,0.05)' } },
+                            y: { grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true, suggestedMax: ySuggestedMax, ticks: { stepSize: 1, color: '#9ca3af' } }
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                backgroundColor: 'rgba(0,0,0,0.9)',
+                                titleFont: { size: 14, family: 'Inter' },
+                                bodyFont: { size: 13, family: 'Inter' },
+                                padding: 12,
+                                boxPadding: 6,
+                                callbacks: {
+                                    label: function(context) {
+                                        const y = context.parsed.y;
+                                        if (y === 0 || y == null) return null;
+                                        const lists = context.dataset.hoverTaskLists || [];
+                                        const hoverTasks = lists[context.dataIndex] || [];
+                                        let lines = [`${context.dataset.label} (${y})`];
+                                        hoverTasks.forEach(task => {
+                                            let snippet = task.length > 40 ? task.substring(0,40) + '...' : task;
+                                            lines.push(`  → ${snippet}`);
+                                        });
+                                        return lines;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // RENDER LOGIC WITH HEAVY COLOR ACCENTS
+        function renderGoals() {
+            let container = document.getElementById("goalList"); 
+            container.innerHTML = "";
+
+            goals.forEach((goal, gIdx) => {
+                let div = document.createElement("div"); 
+                // Massive color tint on the card background
+                div.className = "goal-card glass rounded-3xl p-6 border-t-4 relative shadow-2xl flex flex-col"; 
+                div.style.borderTopColor = goal.color;
+                div.style.backgroundColor = goal.color + '05'; // 3% opacity of the specific color
+                div.style.setProperty('--goal-color', goal.color);
+
+                let header = document.createElement("div"); 
+                header.className = "flex justify-between items-start mb-6 border-b pb-4";
+                header.style.borderColor = goal.color + '30';
+
+                let titleArea = document.createElement("div");
+                titleArea.className = "flex items-start gap-3 flex-1 pr-4";
+                
+                let title = document.createElement("h2"); 
+                title.className = "text-xl font-bold tracking-tight text-white leading-tight"; 
+                title.innerText = goal.title;
+                
+                titleArea.appendChild(title);
+
+                let actions = document.createElement("div");
+                actions.className = "flex space-x-1 shrink-0";
+                actions.innerHTML = `
+                    <button onclick="addSubGoal(${gIdx})" title="Add Sub-goal" class="p-2 bg-gray-900 shadow hover:bg-gray-800 text-gray-400 hover:text-white rounded-xl transition"><i data-lucide="git-branch" class="w-4 h-4"></i></button>
+                    <button onclick="editGoal(${gIdx})" title="Edit Goal" class="p-2 bg-gray-900 shadow hover:bg-gray-800 text-gray-400 hover:text-white rounded-xl transition"><i data-lucide="edit-2" class="w-4 h-4"></i></button>
+                    <button onclick="deleteGoal(${gIdx})" title="Delete Goal" class="p-2 bg-gray-900 shadow hover:bg-red-900/40 text-gray-400 hover:text-red-400 rounded-xl transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                `;
+                
+                header.appendChild(titleArea); header.appendChild(actions); div.appendChild(header);
+
+                let taskInputWrapper = document.createElement("div");
+                taskInputWrapper.className = "flex items-center gap-3 bg-black/40 border border-gray-700/50 rounded-xl p-1 pl-3 mb-6 focus-within:border-gray-400 transition-colors shadow-inner";
+                let taskInput = document.createElement("input"); 
+                taskInput.placeholder = "Queue executing task..."; taskInput.id = `task-${gIdx}-main`;
+                taskInput.className = "flex-1 bg-transparent border-none outline-none text-sm text-gray-200 py-2.5";
+                taskInput.onkeypress = (e) => { if (e.key === 'Enter') addTask(gIdx, null); };
+                let btnAddTask = document.createElement("button"); 
+                btnAddTask.innerHTML = `<i data-lucide="plus" class="w-4 h-4"></i>`; 
+                btnAddTask.className = "p-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-white transition shadow";
+                btnAddTask.onclick = () => addTask(gIdx, null);
+                taskInputWrapper.appendChild(taskInput); taskInputWrapper.appendChild(btnAddTask);
+                div.appendChild(taskInputWrapper);
+
+                const renderTaskLogic = (t, i, containerToAppend, accentColor = goal.color) => {
+                    // Completed tasks stay visible on completion day, then disappear on later days.
+                    if (t.done && t.completedDate !== currentDate) return;
+                    
+                    let td = document.createElement("div"); 
+                    td.className = "group flex items-start gap-4 p-3.5 bg-gray-900/80 rounded-xl border border-gray-800/80 hover:border-gray-600 transition shadow-sm";
+                    td.style.borderColor = t.done ? accentColor + "80" : "";
+                    
+                    let check = document.createElement("input"); 
+                    check.type = "checkbox"; check.className = "custom-checkbox mt-0.5"; check.checked = t.done; 
+                    check.style.setProperty('--goal-color', accentColor);
+                    check.onclick = () => toggleTask(i);
+                    
+                    let spanContent = document.createElement("div"); spanContent.className = "flex-1 min-w-0 font-medium";
+                    let span = document.createElement("span"); span.innerText = t.text; 
+                    span.className = `block text-[15px] transition-all duration-300 leading-snug`;
+                    if (t.done) {
+                        span.style.color = "#9ca3af";
+                        span.style.textDecoration = "line-through";
+                    } else {
+                        span.style.color = "#e5e7eb";
+                    }
+                    
+                    if(!t.done && t.date !== currentDate && new Date(t.date) < new Date(currentDate)) {
+                        let badge = document.createElement("span");
+                        badge.innerText = "OVERDUE";
+                        badge.className = "ml-2 text-[10px] tracking-widest font-bold bg-red-900/40 text-red-500 px-2 py-0.5 rounded border border-red-800 uppercase";
+                        span.appendChild(badge);
+                    }
+
+                    spanContent.appendChild(span);
+                    
+                    let taskActions = document.createElement("div"); taskActions.className = "opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1";
+                    taskActions.innerHTML = `
+                        <button onclick="editTask(${i})" class="p-1.5 text-gray-500 hover:text-white rounded-md hover:bg-gray-700 transition"><i data-lucide="edit-3" class="w-4 h-4"></i></button>
+                        <button onclick="deleteTask(${i})" class="p-1.5 text-gray-500 hover:text-red-400 rounded-md hover:bg-red-500/20 transition"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    `;
+
+                    td.appendChild(check); td.appendChild(spanContent); td.appendChild(taskActions);
+                    containerToAppend.appendChild(td);
+                };
+
+                let tasksContainer = document.createElement("div"); tasksContainer.className = "space-y-2 mb-6 flex-1";
+                tasks.forEach((t, i) => { if(t.goalIndex === gIdx && t.subIndex === null) renderTaskLogic(t, i, tasksContainer); });
+                if(tasksContainer.children.length > 0) div.appendChild(tasksContainer);
+
+                if (goal.subgoals.length > 0) {
+                    let subgoalsContainer = document.createElement("div"); subgoalsContainer.className = "mt-auto pt-6 border-t border-gray-800/50 space-y-6";
+                    goal.subgoals.forEach((sub, sIdx) => {
+                        let s = document.createElement("div"); s.className = "relative pl-6 ml-1";
+                        let line = document.createElement("div"); line.className = "subgoal-line"; s.appendChild(line);
+
+                        let sHeader = document.createElement("div"); sHeader.className = "flex justify-between items-center mb-3";
+                        let stitle = document.createElement("h3"); stitle.innerText = sub.text; stitle.className = "text-sm font-bold tracking-widest uppercase"; stitle.style.color = goal.color; 
+                        let sActions = document.createElement("div"); sActions.innerHTML = `
+                            <button onclick="editSubGoal(${gIdx}, ${sIdx})" class="p-1 text-gray-500 hover:text-white transition"><i data-lucide="edit-2" class="w-3.5 h-3.5"></i></button>
+                            <button onclick="deleteSubGoal(${gIdx}, ${sIdx})" class="p-1 text-gray-500 hover:text-red-400 transition ml-1"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+                        `;
+                        sHeader.appendChild(stitle); sHeader.appendChild(sActions); s.appendChild(sHeader);
+
+                        let subTaskInputWrapper = document.createElement("div"); subTaskInputWrapper.className = "flex items-center gap-2 bg-black/30 border border-gray-700/50 rounded-lg p-1 pl-3 mb-3 focus-within:border-gray-500 transition-colors shadow-inner";
+                        let subTaskInput = document.createElement("input"); subTaskInput.placeholder = "Queue subgoal task..."; subTaskInput.id = `task-${gIdx}-${sIdx}`; subTaskInput.className = "flex-1 bg-transparent border-none outline-none text-xs text-gray-300 py-2";
+                        subTaskInput.onkeypress = (e) => { if (e.key === 'Enter') addTask(gIdx, sIdx); };
+                        let btnAddSubTask = document.createElement("button"); btnAddSubTask.innerHTML = `<i data-lucide="plus" class="w-3.5 h-3.5 text-gray-400"></i>`; btnAddSubTask.className = "p-1.5 bg-gray-800 hover:bg-gray-700 rounded-md transition shadow"; btnAddSubTask.onclick = () => addTask(gIdx, sIdx);
+                        subTaskInputWrapper.appendChild(subTaskInput); subTaskInputWrapper.appendChild(btnAddSubTask); s.appendChild(subTaskInputWrapper);
+
+                        let subTasksContainer = document.createElement("div"); subTasksContainer.className = "space-y-2";
+                        const subColor = getSubgoalColor(goal.color, sIdx, goal.subgoals.length);
+                        stitle.style.color = subColor;
+                        line.style.background = subColor;
+                        line.style.opacity = 0.8;
+                        subTaskInputWrapper.style.borderColor = subColor + "55";
+                        subTaskInputWrapper.style.backgroundColor = subColor + "14";
+                        btnAddSubTask.style.backgroundColor = subColor + "2a";
+                        btnAddSubTask.onmouseenter = () => { btnAddSubTask.style.backgroundColor = subColor + "45"; };
+                        btnAddSubTask.onmouseleave = () => { btnAddSubTask.style.backgroundColor = subColor + "2a"; };
+
+                        tasks.forEach((t, i) => { if(t.goalIndex === gIdx && t.subIndex === sIdx) renderTaskLogic(t, i, subTasksContainer, subColor); });
+                        s.appendChild(subTasksContainer); subgoalsContainer.appendChild(s);
+                    });
+                    div.appendChild(subgoalsContainer);
+                }
+
+                container.appendChild(div);
+            });
+            lucide.createIcons();
+            updateChart(); // Ensure chart syncs on every render
+        }
+
+        updateDateDisplay();
+    </script>
+</body>
+</html>
