@@ -81,6 +81,9 @@
                 </button>
             </div>
         </header>
+        <p id="fileProtocolWarn" class="hidden mb-4 text-xs text-amber-300/95 bg-amber-950/40 border border-amber-800/60 rounded-xl px-4 py-3 leading-relaxed">
+            You opened this page from disk (<code class="text-amber-200">file://</code>). Cloud sync and some APIs need a real HTTPS origin. Use your Render URL (or a local server) instead of double-clicking the HTML file.
+        </p>
         <div class="flex flex-wrap items-center gap-2 mb-6">
             <span id="cloudStatus" class="text-[11px] tracking-wider uppercase px-3 py-1 rounded-full border border-gray-700 text-gray-400 bg-black/30">Cloud: Not Connected</span>
             <button onclick="configureCloudSync()" class="px-3 py-2 text-xs font-semibold rounded-lg bg-gray-900 border border-gray-700 text-gray-200 hover:border-gray-500 transition">Configure Cloud</button>
@@ -135,6 +138,19 @@
         const CLOUD_ROW_ID = "goal-achiever-main";
         const CLOUD_TABLE = "goal_app_state";
         const CLOUD_PENDING_KEY = "cloud_sync_pending_v1";
+        /** Default project URL + anon public key (browser-safe). Never put service_role in frontend code. */
+        const BAKED_SUPABASE_URL = "https://coverhakfcoehzcqnadu.supabase.co";
+        const BAKED_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvdmVyaGFrZmNvZWh6Y3FuYWR1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwNTE1MzcsImV4cCI6MjA5MDYyNzUzN30.Uy_E-MQi3nJ4jteh6LHx6n8nt04srAdW-ouMjy-ErOU";
+
+        (function seedSupabaseConfigIfEmpty() {
+            try {
+                if (!localStorage.getItem("supabase_anon_key") && BAKED_SUPABASE_ANON_KEY) {
+                    localStorage.setItem("supabase_url", BAKED_SUPABASE_URL);
+                    localStorage.setItem("supabase_anon_key", BAKED_SUPABASE_ANON_KEY);
+                }
+            } catch (e) { /* private mode / quota */ }
+        })();
+
         let supabaseClient = null;
         let cloudSyncTimeout = null;
         let isApplyingCloudData = false;
@@ -286,12 +302,44 @@
             return localStorage.getItem(CLOUD_PENDING_KEY) === "true";
         }
 
+        function looksLikeJwt(s) {
+            return typeof s === "string" && s.length > 80 && /^eyJ/i.test(s.trim());
+        }
+
+        function looksLikeHttpUrl(s) {
+            return typeof s === "string" && /^https?:\/\//i.test(s.trim());
+        }
+
+        function normalizeSupabaseUrl(raw) {
+            let u = (raw || "").trim();
+            if (!u) return "";
+            if (!/^https?:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
+            u = u.replace(/\/+$/, "");
+            try {
+                const parsed = new URL(u);
+                if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+                return parsed.href.replace(/\/+$/, "");
+            } catch {
+                return "";
+            }
+        }
+
         function initCloudClient() {
-            const url = localStorage.getItem("supabase_url");
-            const key = localStorage.getItem("supabase_anon_key");
-            if (!url || !key) {
+            let rawUrl = (localStorage.getItem("supabase_url") || "").trim();
+            let key = (localStorage.getItem("supabase_anon_key") || "").trim();
+            if (!key && BAKED_SUPABASE_ANON_KEY) key = BAKED_SUPABASE_ANON_KEY.trim();
+
+            if (looksLikeJwt(rawUrl) && looksLikeHttpUrl(key)) {
+                localStorage.setItem("supabase_url", key);
+                localStorage.setItem("supabase_anon_key", rawUrl);
+                rawUrl = (localStorage.getItem("supabase_url") || "").trim();
+                key = (localStorage.getItem("supabase_anon_key") || "").trim();
+            }
+
+            const url = normalizeSupabaseUrl(rawUrl) || BAKED_SUPABASE_URL;
+            if (!key || !looksLikeJwt(key)) {
                 supabaseClient = null;
-                updateCloudStatus("Cloud: Not Connected", "neutral");
+                updateCloudStatus("Cloud: Add Anon Key", "warn");
                 return false;
             }
             try {
@@ -309,16 +357,32 @@
         }
 
         function configureCloudSync() {
-            const currentUrl = localStorage.getItem("supabase_url") || "";
+            const currentUrl = localStorage.getItem("supabase_url") || BAKED_SUPABASE_URL;
             const currentKey = localStorage.getItem("supabase_anon_key") || "";
-            const url = prompt("Supabase Project URL:", currentUrl);
-            if (!url) return;
-            const key = prompt("Supabase ANON key (not service role):", currentKey);
-            if (!key) return;
-            localStorage.setItem("supabase_url", url.trim());
-            localStorage.setItem("supabase_anon_key", key.trim());
+            let urlIn = prompt("Supabase Project URL (must start with https://):\nLeave as-is or paste: https://YOUR-PROJECT.supabase.co", currentUrl);
+            if (urlIn === null) return;
+            const keyIn = prompt("Supabase anon public key (long text starting with eyJ… from Settings → API):\nNot the database password.", currentKey);
+            if (keyIn === null || !keyIn.trim()) return;
+
+            let url = urlIn.trim() || BAKED_SUPABASE_URL;
+            let key = keyIn.trim();
+
+            if (looksLikeJwt(url) && looksLikeHttpUrl(key)) {
+                const t = url;
+                url = key;
+                key = t;
+            }
+
+            url = normalizeSupabaseUrl(url) || BAKED_SUPABASE_URL;
+            if (!looksLikeJwt(key)) {
+                alert("That does not look like the anon key (it should be a long JWT starting with eyJ). Paste from Supabase → Settings → API → anon public.");
+                return;
+            }
+
+            localStorage.setItem("supabase_url", url);
+            localStorage.setItem("supabase_anon_key", key);
             initCloudClient();
-            alert("Cloud config saved. Next: click 'Push Local -> DB' to upload your current data.");
+            alert("Cloud config saved. Next: Push Local -> DB.");
         }
 
         async function pushLocalToCloud(showFeedback = false) {
@@ -380,9 +444,15 @@
                 if (showFeedback) alert("No cloud data row yet. Push local data first.");
                 return;
             }
+
+            const cloudGoals = Array.isArray(data.goals) ? data.goals : [];
+            const cloudTasks = Array.isArray(data.tasks) ? data.tasks : [];
+            const mergedGoals = mergeGoalsPreferLocal(goals, cloudGoals);
+            const mergedTasks = mergeTasks(tasks, cloudTasks, mergedGoals, cloudGoals);
+
             isApplyingCloudData = true;
-            goals = Array.isArray(data.goals) ? data.goals : [];
-            tasks = Array.isArray(data.tasks) ? data.tasks : [];
+            goals = mergedGoals;
+            tasks = mergedTasks;
             localStorage.setItem("goals", JSON.stringify(goals));
             localStorage.setItem("tasks", JSON.stringify(tasks));
             normalizeTaskCompletionMetadata();
@@ -390,7 +460,8 @@
             updateCloudStatus("Cloud: Synced", "ok");
             renderGoals();
             updateDateDisplay();
-            if (showFeedback) alert("Database data loaded locally.");
+            await pushLocalToCloud(false);
+            if (showFeedback) alert("Merged local + cloud data and synced merged result.");
         }
 
         function scheduleCloudAutosync() {
@@ -405,6 +476,134 @@
             cloudSyncTimeout = setTimeout(() => {
                 pushLocalToCloud(false);
             }, 800);
+        }
+
+        function sanitizeGoal(g) {
+            if (!g || typeof g !== "object") return null;
+            return {
+                title: String(g.title || "").trim(),
+                color: g.color || goalColors[0],
+                subgoals: Array.isArray(g.subgoals)
+                    ? g.subgoals.map((s) => ({
+                        text: String((s && s.text) || "").trim(),
+                        history: Array.isArray(s && s.history) ? s.history : []
+                    })).filter((s) => s.text)
+                    : []
+            };
+        }
+
+        function sanitizeTask(t) {
+            if (!t || typeof t !== "object") return null;
+            const goalIndex = typeof t.goalIndex === "number" ? t.goalIndex : parseInt(t.goalIndex, 10);
+            if (isNaN(goalIndex)) return null;
+            let subIndex = null;
+            if (t.subIndex !== null && t.subIndex !== undefined) {
+                const parsed = typeof t.subIndex === "number" ? t.subIndex : parseInt(t.subIndex, 10);
+                if (!isNaN(parsed)) subIndex = parsed;
+            }
+            return {
+                text: String(t.text || "").trim(),
+                goalIndex,
+                subIndex,
+                date: t.date || new Date().toDateString(),
+                done: !!t.done,
+                completedDate: t.completedDate || null,
+                completedAt: t.completedAt || null
+            };
+        }
+
+        function mergeGoalsPreferLocal(localGoals, cloudGoals) {
+            const merged = [];
+            const byTitle = new Map();
+            (Array.isArray(localGoals) ? localGoals : []).forEach((g) => {
+                const cleaned = sanitizeGoal(g);
+                if (!cleaned || !cleaned.title) return;
+                byTitle.set(cleaned.title.toLowerCase(), cleaned);
+                merged.push(cleaned);
+            });
+            (Array.isArray(cloudGoals) ? cloudGoals : []).forEach((g) => {
+                const cleaned = sanitizeGoal(g);
+                if (!cleaned || !cleaned.title) return;
+                const key = cleaned.title.toLowerCase();
+                if (!byTitle.has(key)) {
+                    byTitle.set(key, cleaned);
+                    merged.push(cleaned);
+                    return;
+                }
+                const existing = byTitle.get(key);
+                const subSet = new Set(existing.subgoals.map((s) => s.text.toLowerCase()));
+                cleaned.subgoals.forEach((s) => {
+                    const skey = s.text.toLowerCase();
+                    if (!subSet.has(skey)) {
+                        existing.subgoals.push(s);
+                        subSet.add(skey);
+                    }
+                });
+            });
+            return merged;
+        }
+
+        function mergeTasks(localTasks, cloudTasks, mergedGoals, cloudGoals) {
+            const result = [];
+            const seen = new Set();
+            const cloudTitleByIndex = {};
+            const cloudSubByIndex = {};
+            (Array.isArray(cloudGoals) ? cloudGoals : []).forEach((g, gi) => {
+                cloudTitleByIndex[gi] = g && g.title ? String(g.title) : "";
+                const subs = Array.isArray(g && g.subgoals) ? g.subgoals : [];
+                cloudSubByIndex[gi] = subs.map((s) => (s && s.text ? String(s.text) : ""));
+            });
+
+            function normalizeTaskForMergedGoals(task, sourceCloud = false) {
+                const t = sanitizeTask(task);
+                if (!t || !t.text) return null;
+                if (!sourceCloud) return t;
+                const goalTitle = cloudTitleByIndex[t.goalIndex];
+                if (!goalTitle) return null;
+                const mergedGoalIndex = mergedGoals.findIndex((g) => g.title.toLowerCase() === goalTitle.toLowerCase());
+                if (mergedGoalIndex < 0) return null;
+                let mergedSubIndex = null;
+                if (t.subIndex !== null && cloudSubByIndex[t.goalIndex]) {
+                    const subTitle = cloudSubByIndex[t.goalIndex][t.subIndex];
+                    if (subTitle) {
+                        const idx = mergedGoals[mergedGoalIndex].subgoals.findIndex((s) => s.text.toLowerCase() === subTitle.toLowerCase());
+                        mergedSubIndex = idx >= 0 ? idx : null;
+                    }
+                }
+                t.goalIndex = mergedGoalIndex;
+                t.subIndex = mergedSubIndex;
+                return t;
+            }
+
+            function keyOf(task) {
+                return `${task.text.toLowerCase()}|${task.goalIndex}|${task.subIndex === null ? "main" : task.subIndex}|${task.date}`;
+            }
+
+            function put(task) {
+                const key = keyOf(task);
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    result.push(task);
+                    return;
+                }
+                const idx = result.findIndex((r) => keyOf(r) === key);
+                if (idx >= 0) {
+                    if (task.done && !result[idx].done) result[idx].done = true;
+                    if (!result[idx].completedAt && task.completedAt) result[idx].completedAt = task.completedAt;
+                    if (!result[idx].completedDate && task.completedDate) result[idx].completedDate = task.completedDate;
+                }
+            }
+
+            (Array.isArray(localTasks) ? localTasks : []).forEach((t) => {
+                const normalized = normalizeTaskForMergedGoals(t, false);
+                if (normalized) put(normalized);
+            });
+            (Array.isArray(cloudTasks) ? cloudTasks : []).forEach((t) => {
+                const normalized = normalizeTaskForMergedGoals(t, true);
+                if (normalized) put(normalized);
+            });
+
+            return result;
         }
 
         function normalizeTaskCompletionMetadata() {
@@ -989,6 +1188,11 @@
         }
 
         initCloudClient();
+
+        if (location.protocol === "file:") {
+            const fp = document.getElementById("fileProtocolWarn");
+            if (fp) fp.classList.remove("hidden");
+        }
 
         window.addEventListener("online", () => {
             if (!supabaseClient) return;
