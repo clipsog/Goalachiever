@@ -151,6 +151,21 @@
             } catch (e) { /* private mode / quota */ }
         })();
 
+        function repairBadSupabaseUrlInStorage() {
+            try {
+                const raw = (localStorage.getItem("supabase_url") || "").trim();
+                if (!raw) return;
+                const bad =
+                    /^postgres(ql)?:\/\//i.test(raw) ||
+                    /pooler\.supabase\.com/i.test(raw) ||
+                    /:6543\b/.test(raw) ||
+                    /postgresql/i.test(raw) ||
+                    /^https?:\/\/postgresql/i.test(raw);
+                if (bad) localStorage.setItem("supabase_url", BAKED_SUPABASE_URL);
+            } catch (e) { /* private mode */ }
+        }
+        repairBadSupabaseUrlInStorage();
+
         let supabaseClient = null;
         let cloudSyncTimeout = null;
         let isApplyingCloudData = false;
@@ -313,18 +328,31 @@
         function normalizeSupabaseUrl(raw) {
             let u = (raw || "").trim();
             if (!u) return "";
+            if (/^postgres(ql)?:\/\//i.test(u)) return "";
             if (!/^https?:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
             u = u.replace(/\/+$/, "");
             try {
                 const parsed = new URL(u);
                 if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+                if (/^postgresql$/i.test(parsed.hostname)) return "";
                 return parsed.href.replace(/\/+$/, "");
             } catch {
                 return "";
             }
         }
 
+        function isValidSupabaseRestUrl(href) {
+            try {
+                const p = new URL(href);
+                if (p.protocol !== "https:" && p.protocol !== "http:") return false;
+                return /^[a-z0-9-]+\.supabase\.co$/i.test(p.hostname);
+            } catch {
+                return false;
+            }
+        }
+
         function initCloudClient() {
+            repairBadSupabaseUrlInStorage();
             let rawUrl = (localStorage.getItem("supabase_url") || "").trim();
             let key = (localStorage.getItem("supabase_anon_key") || "").trim();
             if (!key && BAKED_SUPABASE_ANON_KEY) key = BAKED_SUPABASE_ANON_KEY.trim();
@@ -336,7 +364,13 @@
                 key = (localStorage.getItem("supabase_anon_key") || "").trim();
             }
 
-            const url = normalizeSupabaseUrl(rawUrl) || BAKED_SUPABASE_URL;
+            let url = normalizeSupabaseUrl(rawUrl) || BAKED_SUPABASE_URL;
+            if (!isValidSupabaseRestUrl(url)) {
+                url = BAKED_SUPABASE_URL;
+                try {
+                    localStorage.setItem("supabase_url", url);
+                } catch (e) { /* ignore */ }
+            }
             if (!key || !looksLikeJwt(key)) {
                 supabaseClient = null;
                 updateCloudStatus("Cloud: Add Anon Key", "warn");
@@ -374,6 +408,10 @@
             }
 
             url = normalizeSupabaseUrl(url) || BAKED_SUPABASE_URL;
+            if (!isValidSupabaseRestUrl(url)) {
+                alert("Use the HTTPS Project URL from Supabase (https://YOUR-PROJECT.supabase.co).\nDo not paste the Postgres / pooler connection string (port 6543).");
+                return;
+            }
             if (!looksLikeJwt(key)) {
                 alert("That does not look like the anon key (it should be a long JWT starting with eyJ). Paste from Supabase → Settings → API → anon public.");
                 return;
