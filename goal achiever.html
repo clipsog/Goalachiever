@@ -300,6 +300,39 @@
         let goals = JSON.parse(localStorage.getItem("goals")) || [];
         let tasks = JSON.parse(localStorage.getItem("tasks")) || [];
 
+        let deletedTaskIds = [];
+        try {
+            deletedTaskIds = JSON.parse(localStorage.getItem("deleted_task_ids") || "[]");
+        } catch (e) {
+            deletedTaskIds = [];
+        }
+        if (!Array.isArray(deletedTaskIds)) deletedTaskIds = [];
+
+        function newTaskId() {
+            if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+            return "t-" + Date.now() + "-" + Math.random().toString(36).slice(2, 12);
+        }
+        function ensureEveryTaskHasTid() {
+            let ch = false;
+            (tasks || []).forEach((t) => {
+                if (!t.tid) {
+                    t.tid = newTaskId();
+                    ch = true;
+                }
+            });
+            if (ch) {
+                try {
+                    localStorage.setItem("tasks", JSON.stringify(tasks));
+                } catch (e) {}
+            }
+        }
+        function persistDeletedTaskIds() {
+            try {
+                localStorage.setItem("deleted_task_ids", JSON.stringify(deletedTaskIds));
+            } catch (e) {}
+        }
+        ensureEveryTaskHasTid();
+
         function updateCloudStatus(text, tone = "neutral") {
             const el = document.getElementById("cloudStatus");
             if (!el) return;
@@ -442,13 +475,23 @@
                 return;
             }
             updateCloudStatus("Cloud: Syncing Up...", "warn");
-            const payload = {
+            let payload = {
                 id: CLOUD_ROW_ID,
                 goals: goals,
                 tasks: tasks,
+                deleted_task_ids: deletedTaskIds,
                 updated_at: new Date().toISOString()
             };
-            const { error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" });
+            let { error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" });
+            if (error && /deleted_task_ids|column|schema/i.test(String(error.message || ""))) {
+                payload = {
+                    id: CLOUD_ROW_ID,
+                    goals: goals,
+                    tasks: tasks,
+                    updated_at: new Date().toISOString()
+                };
+                ({ error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" }));
+            }
             if (error) {
                 console.error(error);
                 setPendingSync(true);
@@ -469,21 +512,35 @@
             if (showFeedback) alert("Local data pushed to database.");
         }
 
+        function mergeDeletedIdArrays(a, b) {
+            return [...new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])])];
+        }
+
         function mergeCloudRowIntoLocal(data) {
             if (!data) return false;
+            const cloudDeleted = Array.isArray(data.deleted_task_ids) ? data.deleted_task_ids : [];
+            const mergedDeleted = mergeDeletedIdArrays(deletedTaskIds, cloudDeleted);
             const cloudGoals = Array.isArray(data.goals) ? data.goals : [];
             const cloudTasks = Array.isArray(data.tasks) ? data.tasks : [];
+            ensureEveryTaskHasTid();
+            (cloudTasks || []).forEach((t) => {
+                if (t && !t.tid) t.tid = newTaskId();
+            });
             const mergedGoals = mergeGoalsPreferLocal(goals, cloudGoals);
-            const mergedTasks = mergeTasks(tasks, cloudTasks, mergedGoals, cloudGoals);
-            const before = JSON.stringify({ goals, tasks });
-            const after = JSON.stringify({ goals: mergedGoals, tasks: mergedTasks });
+            const delSet = new Set(mergedDeleted);
+            const mergedTasks = mergeTasks(tasks, cloudTasks, mergedGoals, cloudGoals, delSet);
+            const before = JSON.stringify({ goals, tasks, deletedTaskIds });
+            const after = JSON.stringify({ goals: mergedGoals, tasks: mergedTasks, deletedTaskIds: mergedDeleted });
             if (before === after) return false;
             isApplyingCloudData = true;
             goals = mergedGoals;
             tasks = mergedTasks;
+            deletedTaskIds = mergedDeleted;
             localStorage.setItem("goals", JSON.stringify(goals));
             localStorage.setItem("tasks", JSON.stringify(tasks));
+            persistDeletedTaskIds();
             normalizeTaskCompletionMetadata();
+            ensureEveryTaskHasTid();
             isApplyingCloudData = false;
             renderGoals();
             updateDateDisplay();
@@ -509,11 +566,25 @@
             cloudSyncInFlight = true;
             try {
                 updateCloudStatus("Cloud: Syncing...", "warn");
-                const { data, error } = await supabaseClient
+                let data;
+                let error;
+                const sel = await supabaseClient
                     .from(CLOUD_TABLE)
-                    .select("goals, tasks")
+                    .select("goals, tasks, deleted_task_ids")
                     .eq("id", CLOUD_ROW_ID)
                     .maybeSingle();
+                data = sel.data;
+                error = sel.error;
+                if (error && /column|schema|deleted_task_ids|does not exist/i.test(String(error.message || ""))) {
+                    const sel2 = await supabaseClient
+                        .from(CLOUD_TABLE)
+                        .select("goals, tasks")
+                        .eq("id", CLOUD_ROW_ID)
+                        .maybeSingle();
+                    data = sel2.data;
+                    error = sel2.error;
+                    if (data && data.deleted_task_ids === undefined) data.deleted_task_ids = [];
+                }
                 if (error) {
                     console.error(error);
                     updateCloudStatus("Cloud: Sync Failed", "err");
@@ -586,7 +657,7 @@
                 const parsed = typeof t.subIndex === "number" ? t.subIndex : parseInt(t.subIndex, 10);
                 if (!isNaN(parsed)) subIndex = parsed;
             }
-            return {
+            const out = {
                 text: String(t.text || "").trim(),
                 goalIndex,
                 subIndex,
@@ -595,6 +666,8 @@
                 completedDate: t.completedDate || null,
                 completedAt: t.completedAt || null
             };
+            if (t.tid) out.tid = String(t.tid);
+            return out;
         }
 
         function mergeGoalsPreferLocal(localGoals, cloudGoals) {
@@ -628,7 +701,8 @@
             return merged;
         }
 
-        function mergeTasks(localTasks, cloudTasks, mergedGoals, cloudGoals) {
+        function mergeTasks(localTasks, cloudTasks, mergedGoals, cloudGoals, mergedDeletedSet) {
+            const tomb = mergedDeletedSet instanceof Set ? mergedDeletedSet : new Set(mergedDeletedSet || []);
             const result = [];
             const seen = new Set();
             const cloudTitleByIndex = {};
@@ -642,6 +716,7 @@
             function normalizeTaskForMergedGoals(task, sourceCloud = false) {
                 const t = sanitizeTask(task);
                 if (!t || !t.text) return null;
+                if (t.tid && tomb.has(t.tid)) return null;
                 if (!sourceCloud) return t;
                 const goalTitle = cloudTitleByIndex[t.goalIndex];
                 if (!goalTitle) return null;
@@ -834,11 +909,21 @@
             let inputId = sIdx===null ? `task-${gIdx}-main` : `task-${gIdx}-${sIdx}`;
             let input = document.getElementById(inputId); let text = input.value.trim();
             if(!text) return;
-            tasks.push({text: text, goalIndex: gIdx, subIndex: sIdx, date: currentDate, done: false, completedDate: null});
+            tasks.push({ tid: newTaskId(), text: text, goalIndex: gIdx, subIndex: sIdx, date: currentDate, done: false, completedDate: null });
             input.value = ""; saveTasks(); renderGoals();
         }
         function editTask(i) { let t = prompt("Edit execution task:", tasks[i].text); if(t) { tasks[i].text=t; saveTasks(); renderGoals(); } }
-        function deleteTask(i) { if(confirm("Delete task?")) { tasks.splice(i,1); saveTasks(); renderGoals(); } }
+        function deleteTask(i) {
+            if (!confirm("Delete task?")) return;
+            const t = tasks[i];
+            if (t.tid) {
+                if (!deletedTaskIds.includes(t.tid)) deletedTaskIds.push(t.tid);
+                persistDeletedTaskIds();
+            }
+            tasks.splice(i, 1);
+            saveTasks();
+            renderGoals();
+        }
         
         function toggleTask(i) { 
             tasks[i].done = !tasks[i].done; 

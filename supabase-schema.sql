@@ -22,3 +22,6 @@ create policy "goal_app_state_anon_all"
 
 grant usage on schema public to anon;
 grant select, insert, update, delete on table public.goal_app_state to anon;
+
+-- Tombstones for deleted tasks (stops merge from resurrecting them from the cloud)
+alter table public.goal_app_state add column if not exists deleted_task_ids jsonb not null default '[]'::jsonb;
