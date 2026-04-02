@@ -874,18 +874,33 @@
             return new Date(dateObj).toDateString();
         }
 
+        /** Avoid UTC-shift bugs from `new Date("YYYY-MM-DD")` when bucketing by local calendar day. */
+        function parseTaskDateFlexible(val) {
+            if (val == null || val === "") return null;
+            const s = String(val).trim();
+            const isoDay = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+            if (isoDay) {
+                const y = +isoDay[1];
+                const mo = +isoDay[2];
+                const d = +isoDay[3];
+                return new Date(y, mo - 1, d, 12, 0, 0, 0);
+            }
+            const parsed = new Date(s);
+            return isNaN(parsed.getTime()) ? null : parsed;
+        }
+
         function getTaskCompletionDateObj(task) {
             if (task.completedAt) {
-                const d = new Date(task.completedAt);
-                if (!isNaN(d.getTime())) return d;
+                const d = parseTaskDateFlexible(task.completedAt);
+                if (d && !isNaN(d.getTime())) return d;
             }
             if (task.completedDate) {
-                const d = new Date(task.completedDate);
-                if (!isNaN(d.getTime())) return d;
+                const d = parseTaskDateFlexible(task.completedDate);
+                if (d && !isNaN(d.getTime())) return d;
             }
             if (task.done && task.date) {
-                const d = new Date(task.date);
-                if (!isNaN(d.getTime())) return d;
+                const d = parseTaskDateFlexible(task.date);
+                if (d && !isNaN(d.getTime())) return d;
             }
             return null;
         }
@@ -895,6 +910,14 @@
             if (g === undefined || g === null) return -1;
             const n = typeof g === "number" ? g : parseInt(g, 10);
             return isNaN(n) ? -1 : n;
+        }
+
+        /** Stale indices after deleting/reordering goals would drop tasks from the chart; map orphans so history still shows. */
+        function safeGoalIndexForChart(rawIdx) {
+            if (!goals || !goals.length) return -1;
+            const n = typeof rawIdx === "number" ? rawIdx : parseInt(rawIdx, 10);
+            if (isNaN(n) || n < 0 || n >= goals.length) return 0;
+            return n;
         }
 
         function isSameLocalCalendarDay(dateVal, currentDateStr) {
@@ -1001,6 +1024,7 @@
 
             const granularity = (document.getElementById("chartGranularity") || {}).value || "daily";
             const baseDate = new Date(currentDate);
+            const DAILY_TRAJECTORY_DAYS = 90;
 
             if (granularity === "hourly") {
                 if (chartInstance && chartInstance.config.type !== "scatter") {
@@ -1013,14 +1037,9 @@
                     const events = [];
                     tasks.forEach((t) => {
                         if (!t.done) return;
-                        if (resolveGoalIndex(t) !== idx) return;
-                        let cd = getTaskCompletionDateObj(t);
-                        if (!cd || isNaN(cd.getTime())) {
-                            if (t.completedDate) {
-                                cd = new Date(t.completedDate);
-                                cd.setHours(12, 0, 0, 0);
-                            } else return;
-                        }
+                        if (safeGoalIndexForChart(resolveGoalIndex(t)) !== idx) return;
+                        const cd = getTaskCompletionDateObj(t);
+                        if (!cd || isNaN(cd.getTime())) return;
                         if (!isSameLocalCalendarDay(cd, currentDate)) return;
                         const xh = localFractionalHourSinceMidnight(cd);
                         if (xh == null) return;
@@ -1135,7 +1154,7 @@
             let bucketKeyGetter = () => "";
 
             if (granularity === "daily") {
-                for(let i = 13; i >= 0; i--) {
+                for (let i = DAILY_TRAJECTORY_DAYS - 1; i >= 0; i--) {
                     const d = new Date(baseDate);
                     d.setDate(d.getDate() - i);
                     d.setHours(0, 0, 0, 0);
@@ -1202,16 +1221,11 @@
             let maxY = 0;
             tasks.forEach(t => {
                 if (!t.done) return;
-                const gIdx = resolveGoalIndex(t);
+                const gIdx = safeGoalIndexForChart(resolveGoalIndex(t));
                 if (gIdx < 0 || !goals[gIdx] || !datasetsObj[gIdx]) return;
 
-                let completedObj = getTaskCompletionDateObj(t);
-                if (!completedObj || isNaN(completedObj.getTime())) {
-                    if (t.completedDate) {
-                        completedObj = new Date(t.completedDate);
-                        completedObj.setHours(12, 0, 0, 0);
-                    } else return;
-                }
+                const completedObj = getTaskCompletionDateObj(t);
+                if (!completedObj || isNaN(completedObj.getTime())) return;
                 const key = bucketKeyGetter(completedObj);
                 if (key == null) return;
                 const idx = bucketIndexByKey[key];
