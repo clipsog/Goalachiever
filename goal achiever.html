@@ -1122,7 +1122,6 @@
             let datasetsObj = {}; 
             
             goals.forEach((g, idx) => {
-                const hoverTaskLists = buckets.map(() => []);
                 datasetsObj[idx] = {
                     label: g.title,
                     borderColor: g.color,
@@ -1133,8 +1132,7 @@
                     pointHoverRadius: 8,
                     tension: 0.3, // smooth curves
                     fill: false,
-                    data: buckets.map(() => 0),
-                    hoverTaskLists: hoverTaskLists
+                    data: buckets.map(() => ({ y: 0, tasks: [] }))
                 };
             });
 
@@ -1162,9 +1160,12 @@
                 const idx = bucketIndexByKey[key];
                 if (idx === undefined) return;
 
-                datasetsObj[gIdx].data[idx] += 1;
-                datasetsObj[gIdx].hoverTaskLists[idx].push(t.text || "");
-                maxY = Math.max(maxY, datasetsObj[gIdx].data[idx]);
+                const pt = datasetsObj[gIdx].data[idx];
+                if (pt && typeof pt === "object" && "y" in pt) {
+                    pt.y += 1;
+                    pt.tasks.push(t.text || "");
+                    maxY = Math.max(maxY, pt.y);
+                }
             });
 
             const datasetsInfo = Object.values(datasetsObj);
@@ -1174,6 +1175,10 @@
             if (chartInstance) {
                 chartInstance.data.labels = displayLabels;
                 chartInstance.data.datasets = datasetsInfo;
+                if (chartInstance.options) {
+                    chartInstance.options.parsing = { yAxisKey: "y" };
+                    if (chartInstance.options.interaction) chartInstance.options.interaction.intersect = true;
+                }
                 if (chartInstance.options.scales && chartInstance.options.scales.y) {
                     chartInstance.options.scales.y.suggestedMax = ySuggestedMax;
                 }
@@ -1185,7 +1190,8 @@
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                        parsing: { yAxisKey: 'y' },
+                        interaction: { mode: 'nearest', axis: 'x', intersect: true },
                         scales: {
                             x: { grid: { color: 'rgba(255,255,255,0.05)' } },
                             y: { grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true, suggestedMax: ySuggestedMax, ticks: { stepSize: 1, color: '#9ca3af' } }
@@ -1200,13 +1206,14 @@
                                 boxPadding: 6,
                                 callbacks: {
                                     label: function(context) {
-                                        const y = context.parsed.y;
+                                        const raw = context.raw;
+                                        const pt = raw && typeof raw === "object" && "y" in raw ? raw : { y: context.parsed.y, tasks: [] };
+                                        const y = pt.y;
                                         if (y === 0 || y == null) return null;
-                                        const lists = context.dataset.hoverTaskLists || [];
-                                        const hoverTasks = lists[context.dataIndex] || [];
+                                        const hoverTasks = Array.isArray(pt.tasks) ? pt.tasks : [];
                                         let lines = [`${context.dataset.label} (${y})`];
-                                        hoverTasks.forEach(task => {
-                                            let snippet = task.length > 40 ? task.substring(0,40) + '...' : task;
+                                        hoverTasks.forEach((task) => {
+                                            let snippet = task.length > 40 ? task.substring(0, 40) + "..." : task;
                                             lines.push(`  → ${snippet}`);
                                         });
                                         return lines;
