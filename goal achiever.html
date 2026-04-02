@@ -308,6 +308,14 @@
         }
         if (!Array.isArray(deletedTaskIds)) deletedTaskIds = [];
 
+        let deletedTaskKeys = [];
+        try {
+            deletedTaskKeys = JSON.parse(localStorage.getItem("deleted_task_keys") || "[]");
+        } catch (e) {
+            deletedTaskKeys = [];
+        }
+        if (!Array.isArray(deletedTaskKeys)) deletedTaskKeys = [];
+
         function newTaskId() {
             if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
             return "t-" + Date.now() + "-" + Math.random().toString(36).slice(2, 12);
@@ -326,9 +334,10 @@
                 } catch (e) {}
             }
         }
-        function persistDeletedTaskIds() {
+        function persistDeletedTombstones() {
             try {
                 localStorage.setItem("deleted_task_ids", JSON.stringify(deletedTaskIds));
+                localStorage.setItem("deleted_task_keys", JSON.stringify(deletedTaskKeys));
             } catch (e) {}
         }
         ensureEveryTaskHasTid();
@@ -480,9 +489,20 @@
                 goals: goals,
                 tasks: tasks,
                 deleted_task_ids: deletedTaskIds,
+                deleted_task_keys: deletedTaskKeys,
                 updated_at: new Date().toISOString()
             };
             let { error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" });
+            if (error && /deleted_task_keys|column|schema/i.test(String(error.message || ""))) {
+                payload = {
+                    id: CLOUD_ROW_ID,
+                    goals: goals,
+                    tasks: tasks,
+                    deleted_task_ids: deletedTaskIds,
+                    updated_at: new Date().toISOString()
+                };
+                ({ error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" }));
+            }
             if (error && /deleted_task_ids|column|schema/i.test(String(error.message || ""))) {
                 payload = {
                     id: CLOUD_ROW_ID,
@@ -519,26 +539,32 @@
         function mergeCloudRowIntoLocal(data) {
             if (!data) return false;
             const cloudDeleted = Array.isArray(data.deleted_task_ids) ? data.deleted_task_ids : [];
+            const cloudDeletedKeys = Array.isArray(data.deleted_task_keys) ? data.deleted_task_keys : [];
             const mergedDeleted = mergeDeletedIdArrays(deletedTaskIds, cloudDeleted);
+            const mergedDeletedKeys = mergeDeletedIdArrays(deletedTaskKeys, cloudDeletedKeys);
             const cloudGoals = Array.isArray(data.goals) ? data.goals : [];
             const cloudTasks = Array.isArray(data.tasks) ? data.tasks : [];
             ensureEveryTaskHasTid();
-            (cloudTasks || []).forEach((t) => {
-                if (t && !t.tid) t.tid = newTaskId();
-            });
             const mergedGoals = mergeGoalsPreferLocal(goals, cloudGoals);
             const delSet = new Set(mergedDeleted);
-            const mergedTasks = mergeTasks(tasks, cloudTasks, mergedGoals, cloudGoals, delSet);
-            const before = JSON.stringify({ goals, tasks, deletedTaskIds });
-            const after = JSON.stringify({ goals: mergedGoals, tasks: mergedTasks, deletedTaskIds: mergedDeleted });
+            const delKeySet = new Set(mergedDeletedKeys);
+            const mergedTasks = mergeTasks(tasks, cloudTasks, mergedGoals, cloudGoals, delSet, delKeySet);
+            const before = JSON.stringify({ goals, tasks, deletedTaskIds, deletedTaskKeys });
+            const after = JSON.stringify({
+                goals: mergedGoals,
+                tasks: mergedTasks,
+                deletedTaskIds: mergedDeleted,
+                deletedTaskKeys: mergedDeletedKeys
+            });
             if (before === after) return false;
             isApplyingCloudData = true;
             goals = mergedGoals;
             tasks = mergedTasks;
             deletedTaskIds = mergedDeleted;
+            deletedTaskKeys = mergedDeletedKeys;
             localStorage.setItem("goals", JSON.stringify(goals));
             localStorage.setItem("tasks", JSON.stringify(tasks));
-            persistDeletedTaskIds();
+            persistDeletedTombstones();
             normalizeTaskCompletionMetadata();
             ensureEveryTaskHasTid();
             isApplyingCloudData = false;
@@ -568,22 +594,34 @@
                 updateCloudStatus("Cloud: Syncing...", "warn");
                 let data;
                 let error;
-                const sel = await supabaseClient
+                let sel = await supabaseClient
                     .from(CLOUD_TABLE)
-                    .select("goals, tasks, deleted_task_ids")
+                    .select("goals, tasks, deleted_task_ids, deleted_task_keys")
                     .eq("id", CLOUD_ROW_ID)
                     .maybeSingle();
                 data = sel.data;
                 error = sel.error;
+                if (error && /column|schema|deleted_task_ids|deleted_task_keys|does not exist/i.test(String(error.message || ""))) {
+                    sel = await supabaseClient
+                        .from(CLOUD_TABLE)
+                        .select("goals, tasks, deleted_task_ids")
+                        .eq("id", CLOUD_ROW_ID)
+                        .maybeSingle();
+                    data = sel.data;
+                    error = sel.error;
+                }
                 if (error && /column|schema|deleted_task_ids|does not exist/i.test(String(error.message || ""))) {
-                    const sel2 = await supabaseClient
+                    sel = await supabaseClient
                         .from(CLOUD_TABLE)
                         .select("goals, tasks")
                         .eq("id", CLOUD_ROW_ID)
                         .maybeSingle();
-                    data = sel2.data;
-                    error = sel2.error;
-                    if (data && data.deleted_task_ids === undefined) data.deleted_task_ids = [];
+                    data = sel.data;
+                    error = sel.error;
+                }
+                if (data) {
+                    if (data.deleted_task_ids === undefined) data.deleted_task_ids = [];
+                    if (data.deleted_task_keys === undefined) data.deleted_task_keys = [];
                 }
                 if (error) {
                     console.error(error);
@@ -670,6 +708,11 @@
             return out;
         }
 
+        function taskLegacyKey(st) {
+            if (!st || !st.text) return "";
+            return `${st.text.toLowerCase()}|${st.goalIndex}|${st.subIndex === null ? "main" : st.subIndex}|${st.date}`;
+        }
+
         function mergeGoalsPreferLocal(localGoals, cloudGoals) {
             const merged = [];
             const byTitle = new Map();
@@ -701,8 +744,12 @@
             return merged;
         }
 
-        function mergeTasks(localTasks, cloudTasks, mergedGoals, cloudGoals, mergedDeletedSet) {
+        function mergeTasks(localTasks, cloudTasks, mergedGoals, cloudGoals, mergedDeletedSet, mergedDeletedKeySet) {
             const tomb = mergedDeletedSet instanceof Set ? mergedDeletedSet : new Set(mergedDeletedSet || []);
+            const tombKeys =
+                mergedDeletedKeySet instanceof Set
+                    ? mergedDeletedKeySet
+                    : new Set(mergedDeletedKeySet || []);
             const result = [];
             const seen = new Set();
             const cloudTitleByIndex = {};
@@ -717,7 +764,10 @@
                 const t = sanitizeTask(task);
                 if (!t || !t.text) return null;
                 if (t.tid && tomb.has(t.tid)) return null;
-                if (!sourceCloud) return t;
+                if (!sourceCloud) {
+                    if (tombKeys.has(keyOf(t))) return null;
+                    return t;
+                }
                 const goalTitle = cloudTitleByIndex[t.goalIndex];
                 if (!goalTitle) return null;
                 const mergedGoalIndex = mergedGoals.findIndex((g) => g.title.toLowerCase() === goalTitle.toLowerCase());
@@ -732,6 +782,7 @@
                 }
                 t.goalIndex = mergedGoalIndex;
                 t.subIndex = mergedSubIndex;
+                if (tombKeys.has(keyOf(t))) return null;
                 return t;
             }
 
@@ -916,10 +967,12 @@
         function deleteTask(i) {
             if (!confirm("Delete task?")) return;
             const t = tasks[i];
-            if (t.tid) {
-                if (!deletedTaskIds.includes(t.tid)) deletedTaskIds.push(t.tid);
-                persistDeletedTaskIds();
-            }
+            if (!t.tid) t.tid = newTaskId();
+            const st = sanitizeTask(t);
+            const lk = st ? taskLegacyKey(st) : "";
+            if (lk && !deletedTaskKeys.includes(lk)) deletedTaskKeys.push(lk);
+            if (!deletedTaskIds.includes(t.tid)) deletedTaskIds.push(t.tid);
+            persistDeletedTombstones();
             tasks.splice(i, 1);
             saveTasks();
             renderGoals();
