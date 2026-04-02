@@ -765,7 +765,6 @@
                 if (!t || !t.text) return null;
                 if (t.tid && tomb.has(t.tid)) return null;
                 if (!sourceCloud) {
-                    if (tombKeys.has(keyOf(t))) return null;
                     return t;
                 }
                 const goalTitle = cloudTitleByIndex[t.goalIndex];
@@ -782,7 +781,9 @@
                 }
                 t.goalIndex = mergedGoalIndex;
                 t.subIndex = mergedSubIndex;
-                if (tombKeys.has(keyOf(t))) return null;
+                // Key tombstones are only for legacy cloud rows that have no tid.
+                // This avoids accidentally hiding locally-existing tasks (which feeds the graph).
+                if (!t.tid && tombKeys.has(keyOf(t))) return null;
                 return t;
             }
 
@@ -967,10 +968,13 @@
         function deleteTask(i) {
             if (!confirm("Delete task?")) return;
             const t = tasks[i];
+            const hadTid = !!t.tid;
             if (!t.tid) t.tid = newTaskId();
             const st = sanitizeTask(t);
             const lk = st ? taskLegacyKey(st) : "";
-            if (lk && !deletedTaskKeys.includes(lk)) deletedTaskKeys.push(lk);
+            // Only store legacy key tombstones when the task didn't have a tid at deletion time.
+            // This prevents long-term collisions with newly-created tasks.
+            if (!hadTid && lk && !deletedTaskKeys.includes(lk)) deletedTaskKeys.push(lk);
             if (!deletedTaskIds.includes(t.tid)) deletedTaskIds.push(t.tid);
             persistDeletedTombstones();
             tasks.splice(i, 1);
