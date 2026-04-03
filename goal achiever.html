@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Protocol Zero | Execution Engine</title>
+    <title>Lucid</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Pin v3: stable category line + numeric series; avoids v4 parsing quirks with custom point shapes -->
@@ -47,6 +47,8 @@
             background: var(--goal-color); opacity: 0.6; border-radius: 2px;
         }
 
+        .task-drop-target { box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.45); border-color: rgba(251, 191, 36, 0.5) !important; }
+
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #030712; }
         ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
@@ -57,15 +59,15 @@
     <div class="fixed top-[-10%] left-[-10%] w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-[120px] pointer-events-none -z-10"></div>
     <div class="fixed bottom-[10%] right-[-10%] w-[600px] h-[600px] bg-purple-600/10 rounded-full blur-[150px] pointer-events-none -z-10"></div>
 
-    <div class="max-w-6xl mx-auto pt-10 px-6">
+    <div class="max-w-[1800px] mx-auto pt-10 px-6">
         
         <header class="flex flex-col md:flex-row md:justify-between md:items-end mb-8 space-y-4 md:space-y-0">
             <div>
                 <h1 class="text-5xl font-extrabold tracking-tight text-white mb-2 flex items-center gap-4">
-                    <i data-lucide="zap" class="w-10 h-10 text-yellow-500"></i>
-                    Protocol <span class="text-transparent bg-clip-text bg-gradient-to-r from-gray-500 to-gray-700">Zero</span>
+                    <i data-lucide="sparkles" class="w-10 h-10 text-cyan-400"></i>
+                    <span class="text-transparent bg-clip-text bg-gradient-to-r from-cyan-200 via-white to-violet-300">Lucid</span>
                 </h1>
-                <p class="text-gray-400 text-sm tracking-widest uppercase font-semibold">Macro Ecosystem Architecture</p>
+                <p class="text-gray-400 text-sm tracking-widest uppercase font-semibold">Clarity → execution</p>
             </div>
             
             <div class="glass flex items-center space-x-2 px-3 py-2 rounded-2xl relative border border-gray-800 shadow-2xl">
@@ -94,17 +96,31 @@
 
         <!-- Dynamic Data Line Graph -->
         <div class="glass rounded-3xl p-6 mb-12 border border-gray-800/80 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
-            <div class="flex items-center justify-between gap-4 mb-4">
+            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                 <h3 class="text-gray-400 text-xs font-bold tracking-widest uppercase flex items-center gap-2">
-                    <i data-lucide="trending-up" class="w-4 h-4 text-emerald-400"></i> Execution Trajectory (Hover Points for Details)
+                    <i data-lucide="trending-up" class="w-4 h-4 text-emerald-400"></i> Trajectory (hover points)
                 </h3>
-                <select id="chartGranularity" onchange="updateChart()" class="bg-gray-900/80 border border-gray-700 text-gray-200 text-xs font-semibold tracking-wider uppercase rounded-lg px-3 py-2 outline-none focus:border-gray-500">
-                    <option value="hourly">Hourly</option>
-                    <option value="daily" selected>Daily</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="monthly">Monthly</option>
-                    <option value="yearly">Yearly</option>
-                </select>
+                <div class="flex flex-wrap items-center gap-2">
+                    <label class="text-[10px] uppercase tracking-wider text-gray-500">Columns</label>
+                    <select id="layoutColumns" onchange="setLayoutColumns(this.value)" class="bg-gray-900/80 border border-gray-700 text-gray-200 text-xs font-semibold rounded-lg px-2 py-2 outline-none focus:border-gray-500" title="Goal cards per row (desktop)">
+                        <option value="1">1</option>
+                        <option value="2" selected>2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                    </select>
+                    <select id="chartGranularity" onchange="updateChart()" class="bg-gray-900/80 border border-gray-700 text-gray-200 text-xs font-semibold tracking-wider uppercase rounded-lg px-3 py-2 outline-none focus:border-gray-500">
+                        <option value="hourly">Hourly</option>
+                        <option value="daily" selected>Daily</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="monthly">Monthly</option>
+                        <option value="yearly">Yearly</option>
+                    </select>
+                </div>
+            </div>
+            <div id="dailyChartControls" class="flex flex-wrap items-center gap-3 mb-4 text-xs text-gray-400">
+                <span class="text-[10px] uppercase tracking-wider text-gray-500">Daily range starts</span>
+                <input type="date" id="dailyChartRangeStart" onchange="onDailyChartStartChange(this.value)" class="bg-gray-900/80 border border-gray-700 text-gray-200 rounded-lg px-2 py-1.5 outline-none focus:border-gray-500" />
+                <button type="button" onclick="alignDailyRangeEndToSelectedDay()" class="px-2 py-1.5 rounded-lg border border-gray-700 bg-gray-900/80 text-gray-300 hover:border-gray-500 text-[11px] font-semibold tracking-wide uppercase" title="Last day of the graph = selected day in header">End on selected day</button>
             </div>
             <div class="w-full h-64">
                 <canvas id="velocityChart"></canvas>
@@ -114,15 +130,15 @@
         <!-- Add Goal Input -->
         <div class="glass rounded-2xl p-2 pl-4 mb-10 flex gap-4 items-center border border-gray-800 focus-within:border-gray-500 transition-colors shadow-xl">
             <i data-lucide="target" class="w-6 h-6 text-gray-500"></i>
-            <input type="text" id="goalInput" placeholder="Initialize Macro Directive (New Yearly Goal)..." 
+            <input type="text" id="goalInput" placeholder="New goal…" 
                 class="flex-1 bg-transparent border-none outline-none text-xl font-semibold text-white placeholder-gray-700"
                 onkeypress="if(event.key === 'Enter') addGoal()">
             <button onclick="addGoal()" class="bg-white text-black px-8 py-4 rounded-xl font-bold hover:bg-gray-200 transition shadow-[0_0_20px_rgba(255,255,255,0.2)] flex items-center gap-2">
-                Deploy <i data-lucide="rocket" class="w-5 h-5"></i>
+                Add <i data-lucide="plus" class="w-5 h-5"></i>
             </button>
         </div>
 
-        <div id="goalList" class="grid grid-cols-1 md:grid-cols-2 gap-8 items-start"></div>
+        <div id="goalList" class="gap-8 items-start"></div>
     </div>
 
     <!-- Logic -->
@@ -137,6 +153,7 @@
         let chartInstance = null;
         /** Parallel to line-chart datasets[].data[bucketIndex] for tooltips (plain numeric series). */
         let lineChartHoverTasks = null;
+        const LUCID_DAILY_RANGE_DAYS = 90;
         let currentDate = new Date().toDateString();
         const CLOUD_ROW_ID = "goal-achiever-main";
         const CLOUD_TABLE = "goal_app_state";
@@ -711,7 +728,8 @@
                 date: t.date || new Date().toDateString(),
                 done: !!t.done,
                 completedDate: t.completedDate || null,
-                completedAt: t.completedAt || null
+                completedAt: t.completedAt || null,
+                blockedByTid: t.blockedByTid ? String(t.blockedByTid) : null
             };
             if (t.tid) out.tid = String(t.tid);
             return out;
@@ -814,6 +832,7 @@
                     if (task.done && !result[idx].done) result[idx].done = true;
                     if (!result[idx].completedAt && task.completedAt) result[idx].completedAt = task.completedAt;
                     if (!result[idx].completedDate && task.completedDate) result[idx].completedDate = task.completedDate;
+                    if (task.blockedByTid && !result[idx].blockedByTid) result[idx].blockedByTid = task.blockedByTid;
                 }
             }
 
@@ -880,6 +899,103 @@
 
         function saveGoals() { localStorage.setItem("goals", JSON.stringify(goals)); updateChart(); scheduleCloudAutosync(); }
         function saveTasks() { localStorage.setItem("tasks", JSON.stringify(tasks)); updateChart(); scheduleCloudAutosync(); }
+
+        function getDefaultDailyRangeStartISO() {
+            const d = new Date(currentDate);
+            d.setHours(12, 0, 0, 0);
+            d.setDate(d.getDate() - (LUCID_DAILY_RANGE_DAYS - 1));
+            return d.toISOString().split("T")[0];
+        }
+
+        function applyLayoutColumns() {
+            const el = document.getElementById("goalList");
+            if (!el) return;
+            let n = parseInt(localStorage.getItem("lucid_columns") || "2", 10);
+            if (isNaN(n) || n < 1) n = 1;
+            if (n > 4) n = 4;
+            const mq = typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 768px)") : { matches: true };
+            const cols = mq.matches ? n : 1;
+            el.style.display = "grid";
+            el.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+        }
+
+        function setLayoutColumns(val) {
+            let n = parseInt(val, 10);
+            if (isNaN(n) || n < 1) n = 2;
+            if (n > 4) n = 4;
+            try {
+                localStorage.setItem("lucid_columns", String(n));
+            } catch (e) {}
+            applyLayoutColumns();
+        }
+
+        function onDailyChartStartChange(iso) {
+            try {
+                if (iso) localStorage.setItem("lucid_daily_range_start", iso);
+            } catch (e) {}
+            updateChart();
+        }
+
+        function alignDailyRangeEndToSelectedDay() {
+            const d = new Date(currentDate);
+            d.setHours(12, 0, 0, 0);
+            d.setDate(d.getDate() - (LUCID_DAILY_RANGE_DAYS - 1));
+            const iso = d.toISOString().split("T")[0];
+            try {
+                localStorage.setItem("lucid_daily_range_start", iso);
+            } catch (e) {}
+            const inp = document.getElementById("dailyChartRangeStart");
+            if (inp) inp.value = iso;
+            updateChart();
+        }
+
+        function syncDailyChartControlsVisibility() {
+            const el = document.getElementById("dailyChartControls");
+            if (!el) return;
+            const g = (document.getElementById("chartGranularity") || {}).value || "daily";
+            el.classList.toggle("hidden", g !== "daily");
+        }
+
+        function taskByTid(tid) {
+            if (!tid) return null;
+            return tasks.find((x) => x.tid === tid) || null;
+        }
+
+        function prerequisiteChainContainsTid(startTid, needleTid) {
+            let cur = startTid;
+            const seen = new Set();
+            for (let n = 0; n < 64; n++) {
+                if (!cur) return false;
+                if (cur === needleTid) return true;
+                if (seen.has(cur)) return false;
+                seen.add(cur);
+                const t = taskByTid(cur);
+                if (!t || !t.blockedByTid) return false;
+                cur = t.blockedByTid;
+            }
+            return false;
+        }
+
+        function attachTaskBottleneck(dragTid, blockerTid) {
+            if (!dragTid || !blockerTid || dragTid === blockerTid) return;
+            const i = tasks.findIndex((t) => t.tid === dragTid);
+            const j = tasks.findIndex((t) => t.tid === blockerTid);
+            if (i < 0 || j < 0) return;
+            if (prerequisiteChainContainsTid(blockerTid, dragTid)) {
+                alert("That would create a circular bottleneck.");
+                return;
+            }
+            tasks[i].blockedByTid = blockerTid;
+            saveTasks();
+            renderGoals();
+        }
+
+        function clearTaskBottleneck(i) {
+            if (!tasks[i]) return;
+            tasks[i].blockedByTid = null;
+            saveTasks();
+            renderGoals();
+        }
 
         function getDateKey(dateObj) {
             return new Date(dateObj).toDateString();
@@ -1026,14 +1142,27 @@
             let inputId = sIdx===null ? `task-${gIdx}-main` : `task-${gIdx}-${sIdx}`;
             let input = document.getElementById(inputId); let text = input.value.trim();
             if(!text) return;
-            tasks.push({ tid: newTaskId(), text: text, goalIndex: gIdx, subIndex: sIdx, date: currentDate, done: false, completedDate: null });
+            tasks.push({
+                tid: newTaskId(),
+                text: text,
+                goalIndex: gIdx,
+                subIndex: sIdx,
+                date: currentDate,
+                done: false,
+                completedDate: null,
+                blockedByTid: null
+            });
             input.value = ""; saveTasks(); renderGoals();
         }
         function editTask(i) { let t = prompt("Edit execution task:", tasks[i].text); if(t) { tasks[i].text=t; saveTasks(); renderGoals(); } }
         function deleteTask(i) {
             if (!confirm("Delete task?")) return;
             const t = tasks[i];
-            if (!t.tid) t.tid = newTaskId();
+            const deadTid = t.tid || newTaskId();
+            if (!t.tid) t.tid = deadTid;
+            tasks.forEach((x) => {
+                if (x.blockedByTid === deadTid) x.blockedByTid = null;
+            });
             const st = sanitizeTask(t);
             const lk = st ? taskLegacyKey(st) : "";
             // Always record legacy key: cloud copies often won't match our tid, but mergeTasks
@@ -1046,8 +1175,18 @@
             renderGoals();
         }
         
-        function toggleTask(i) { 
-            tasks[i].done = !tasks[i].done; 
+        function toggleTask(i) {
+            if (!tasks[i].done) {
+                const pre = tasks[i].blockedByTid;
+                if (pre) {
+                    const p = taskByTid(pre);
+                    if (p && !p.done) {
+                        alert("Complete the bottleneck task first.");
+                        return;
+                    }
+                }
+            }
+            tasks[i].done = !tasks[i].done;
             if(tasks[i].done) {
                 tasks[i].completedDate = currentDate;
                 tasks[i].completedAt = getCompletionISOForCurrentDate();
@@ -1061,11 +1200,17 @@
 
         // DEEP ANALYTICS LINE GRAPH WITH HOVER TOOLTIPS (hourly = scatter on fractional time axis)
         function updateChart() {
+            syncDailyChartControlsVisibility();
             const ctx = document.getElementById('velocityChart').getContext('2d');
 
             const granularity = (document.getElementById("chartGranularity") || {}).value || "daily";
             const baseDate = new Date(currentDate);
-            const DAILY_TRAJECTORY_DAYS = 90;
+            const dailyInp = document.getElementById("dailyChartRangeStart");
+            if (dailyInp && granularity === "daily") {
+                let s = localStorage.getItem("lucid_daily_range_start");
+                if (!s) s = getDefaultDailyRangeStartISO();
+                dailyInp.value = s;
+            }
 
             if (granularity === "hourly") {
                 if (chartInstance && chartInstance.config.type !== "scatter") {
@@ -1195,9 +1340,13 @@
             let bucketKeyGetter = () => "";
 
             if (granularity === "daily") {
-                for (let i = DAILY_TRAJECTORY_DAYS - 1; i >= 0; i--) {
-                    const d = new Date(baseDate);
-                    d.setDate(d.getDate() - i);
+                let startIso = localStorage.getItem("lucid_daily_range_start");
+                if (!startIso) startIso = getDefaultDailyRangeStartISO();
+                const parts = startIso.split("-").map((x) => parseInt(x, 10));
+                const rangeStart = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+                for (let i = 0; i < LUCID_DAILY_RANGE_DAYS; i++) {
+                    const d = new Date(rangeStart);
+                    d.setDate(rangeStart.getDate() + i);
                     d.setHours(0, 0, 0, 0);
                     buckets.push(d);
                 }
@@ -1397,18 +1546,59 @@
                 const renderTaskLogic = (t, i, containerToAppend, accentColor = goal.color) => {
                     // Completed tasks stay visible on completion day, then disappear on later days.
                     if (t.done && t.completedDate !== currentDate) return;
-                    
-                    let td = document.createElement("div"); 
-                    td.className = "group flex items-start gap-4 p-3.5 bg-gray-900/80 rounded-xl border border-gray-800/80 hover:border-gray-600 transition shadow-sm";
+
+                    const pre = t.blockedByTid ? taskByTid(t.blockedByTid) : null;
+                    const blockedPending = !!(pre && !pre.done);
+
+                    let td = document.createElement("div");
+                    td.className = "group flex items-start gap-2 p-3.5 bg-gray-900/80 rounded-xl border border-gray-800/80 hover:border-gray-600 transition shadow-sm";
                     td.style.borderColor = t.done ? accentColor + "80" : "";
-                    
-                    let check = document.createElement("input"); 
-                    check.type = "checkbox"; check.className = "custom-checkbox mt-0.5"; check.checked = t.done; 
-                    check.style.setProperty('--goal-color', accentColor);
-                    check.onclick = () => toggleTask(i);
-                    
-                    let spanContent = document.createElement("div"); spanContent.className = "flex-1 min-w-0 font-medium";
-                    let span = document.createElement("span"); span.innerText = t.text; 
+
+                    td.ondragover = (e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "link";
+                    };
+                    td.ondragenter = (e) => {
+                        const types = e.dataTransfer && e.dataTransfer.types ? Array.from(e.dataTransfer.types) : [];
+                        if (types.includes("application/x-task-tid")) td.classList.add("task-drop-target");
+                    };
+                    td.ondragleave = () => td.classList.remove("task-drop-target");
+                    td.ondrop = (e) => {
+                        e.preventDefault();
+                        td.classList.remove("task-drop-target");
+                        const dragTid = e.dataTransfer.getData("application/x-task-tid");
+                        if (dragTid && t.tid && dragTid !== t.tid) attachTaskBottleneck(dragTid, t.tid);
+                    };
+
+                    const grip = document.createElement("button");
+                    grip.type = "button";
+                    grip.className = "cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 shrink-0 p-1 mt-0.5 -ml-1 rounded";
+                    grip.title = "Drag onto another task to set bottleneck";
+                    grip.innerHTML = '<i data-lucide="grip-vertical" class="w-4 h-4 pointer-events-none"></i>';
+                    grip.draggable = true;
+                    grip.ondragstart = (e) => {
+                        e.stopPropagation();
+                        if (t.tid) e.dataTransfer.setData("application/x-task-tid", t.tid);
+                        e.dataTransfer.effectAllowed = "move";
+                        td.classList.add("opacity-60");
+                    };
+                    grip.ondragend = () => td.classList.remove("opacity-60");
+
+                    let check = document.createElement("input");
+                    check.type = "checkbox";
+                    check.className = "custom-checkbox mt-0.5";
+                    check.checked = t.done;
+                    check.style.setProperty("--goal-color", accentColor);
+                    check.disabled = !t.done && blockedPending;
+                    check.onclick = (ev) => {
+                        ev.stopPropagation();
+                        toggleTask(i);
+                    };
+
+                    let spanContent = document.createElement("div");
+                    spanContent.className = "flex-1 min-w-0 font-medium";
+                    let span = document.createElement("span");
+                    span.innerText = t.text;
                     span.className = `block text-[15px] transition-all duration-300 leading-snug`;
                     if (t.done) {
                         span.style.color = "#9ca3af";
@@ -1416,8 +1606,8 @@
                     } else {
                         span.style.color = "#e5e7eb";
                     }
-                    
-                    if(!t.done && t.date !== currentDate && new Date(t.date) < new Date(currentDate)) {
+
+                    if (!t.done && t.date !== currentDate && new Date(t.date) < new Date(currentDate)) {
                         let badge = document.createElement("span");
                         badge.innerText = "OVERDUE";
                         badge.className = "ml-2 text-[10px] tracking-widest font-bold bg-red-900/40 text-red-500 px-2 py-0.5 rounded border border-red-800 uppercase";
@@ -1425,14 +1615,30 @@
                     }
 
                     spanContent.appendChild(span);
-                    
-                    let taskActions = document.createElement("div"); taskActions.className = "opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1";
+                    if (t.blockedByTid && pre) {
+                        let dep = document.createElement("div");
+                        dep.className = "text-[10px] text-amber-400/95 mt-1.5 font-medium leading-snug";
+                        const snippet = (pre.text || "").length > 100 ? (pre.text || "").slice(0, 100) + "…" : pre.text || "";
+                        dep.innerText = "After: " + snippet;
+                        spanContent.appendChild(dep);
+                    }
+
+                    let taskActions = document.createElement("div");
+                    taskActions.className = "opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 shrink-0";
+                    const clearB =
+                        t.blockedByTid ?
+                            `<button type="button" onclick="clearTaskBottleneck(${i})" class="p-1.5 text-amber-500/90 hover:text-amber-300 rounded-md hover:bg-amber-950/40 transition" title="Clear bottleneck"><i data-lucide="unlink" class="w-4 h-4"></i></button>`
+                        : "";
                     taskActions.innerHTML = `
-                        <button onclick="editTask(${i})" class="p-1.5 text-gray-500 hover:text-white rounded-md hover:bg-gray-700 transition"><i data-lucide="edit-3" class="w-4 h-4"></i></button>
-                        <button onclick="deleteTask(${i})" class="p-1.5 text-gray-500 hover:text-red-400 rounded-md hover:bg-red-500/20 transition"><i data-lucide="x" class="w-4 h-4"></i></button>
+                        ${clearB}
+                        <button type="button" onclick="editTask(${i})" class="p-1.5 text-gray-500 hover:text-white rounded-md hover:bg-gray-700 transition"><i data-lucide="edit-3" class="w-4 h-4"></i></button>
+                        <button type="button" onclick="deleteTask(${i})" class="p-1.5 text-gray-500 hover:text-red-400 rounded-md hover:bg-red-500/20 transition"><i data-lucide="x" class="w-4 h-4"></i></button>
                     `;
 
-                    td.appendChild(check); td.appendChild(spanContent); td.appendChild(taskActions);
+                    td.appendChild(grip);
+                    td.appendChild(check);
+                    td.appendChild(spanContent);
+                    td.appendChild(taskActions);
                     containerToAppend.appendChild(td);
                 };
 
@@ -1480,6 +1686,7 @@
                 container.appendChild(div);
             });
             lucide.createIcons();
+            applyLayoutColumns();
             updateChart(); // Ensure chart syncs on every render
         }
 
@@ -1513,6 +1720,21 @@
         setTimeout(() => {
             runFullBidirectionalSync({ showFeedback: false, force: true });
         }, 2000);
+
+        (function initLucidUi() {
+            const cols = document.getElementById("layoutColumns");
+            if (cols) cols.value = localStorage.getItem("lucid_columns") || "2";
+            applyLayoutColumns();
+            const d = document.getElementById("dailyChartRangeStart");
+            if (d) {
+                let s = localStorage.getItem("lucid_daily_range_start");
+                if (!s) s = getDefaultDailyRangeStartISO();
+                d.value = s;
+            }
+            syncDailyChartControlsVisibility();
+        })();
+
+        window.addEventListener("resize", () => applyLayoutColumns());
 
         updateDateDisplay();
     </script>
