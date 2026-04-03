@@ -1494,12 +1494,33 @@
             }
         }
 
+        function countDoneTasksForGoal(goalIndex) {
+            let n = 0;
+            (tasks || []).forEach((t) => {
+                if (t.goalIndex === goalIndex && t.done) n += 1;
+            });
+            return n;
+        }
+
+        /** Goal cards: fewest completed tasks first (ties keep creation order). */
+        function getGoalRenderOrder() {
+            return goals
+                .map((_, idx) => idx)
+                .sort((a, b) => {
+                    const da = countDoneTasksForGoal(a);
+                    const db = countDoneTasksForGoal(b);
+                    if (da !== db) return da - db;
+                    return a - b;
+                });
+        }
+
         // RENDER LOGIC WITH HEAVY COLOR ACCENTS
         function renderGoals() {
             let container = document.getElementById("goalList"); 
             container.innerHTML = "";
 
-            goals.forEach((goal, gIdx) => {
+            getGoalRenderOrder().forEach((gIdx) => {
+                const goal = goals[gIdx];
                 let div = document.createElement("div"); 
                 // Massive color tint on the card background
                 div.className = "goal-card glass rounded-3xl p-6 border-t-4 relative shadow-2xl flex flex-col"; 
