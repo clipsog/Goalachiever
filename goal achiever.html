@@ -781,9 +781,9 @@
                 }
                 t.goalIndex = mergedGoalIndex;
                 t.subIndex = mergedSubIndex;
-                // Key tombstones are only for legacy cloud rows that have no tid.
-                // This avoids accidentally hiding locally-existing tasks (which feeds the graph).
-                if (!t.tid && tombKeys.has(keyOf(t))) return null;
+                // Drop cloud rows that match a deleted legacy identity (wrong/missing tid on server).
+                // Local rows are not key-filtered above, so graph data and new same-day tasks stay intact.
+                if (tombKeys.has(keyOf(t))) return null;
                 return t;
             }
 
@@ -991,13 +991,12 @@
         function deleteTask(i) {
             if (!confirm("Delete task?")) return;
             const t = tasks[i];
-            const hadTid = !!t.tid;
             if (!t.tid) t.tid = newTaskId();
             const st = sanitizeTask(t);
             const lk = st ? taskLegacyKey(st) : "";
-            // Only store legacy key tombstones when the task didn't have a tid at deletion time.
-            // This prevents long-term collisions with newly-created tasks.
-            if (!hadTid && lk && !deletedTaskKeys.includes(lk)) deletedTaskKeys.push(lk);
+            // Always record legacy key: cloud copies often won't match our tid, but mergeTasks
+            // only applies key tombstones to incoming cloud rows (not local), so new local tasks stay safe.
+            if (lk && !deletedTaskKeys.includes(lk)) deletedTaskKeys.push(lk);
             if (!deletedTaskIds.includes(t.tid)) deletedTaskIds.push(t.tid);
             persistDeletedTombstones();
             tasks.splice(i, 1);
