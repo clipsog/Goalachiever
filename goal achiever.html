@@ -135,6 +135,8 @@
         ];
         
         let chartInstance = null;
+        /** Parallel to line-chart datasets[].data[bucketIndex] for tooltips (plain numeric series). */
+        let lineChartHoverTasks = null;
         let currentDate = new Date().toDateString();
         const CLOUD_ROW_ID = "goal-achiever-main";
         const CLOUD_TABLE = "goal_app_state";
@@ -669,7 +671,7 @@
             if (cloudSyncTimeout) clearTimeout(cloudSyncTimeout);
             cloudSyncTimeout = setTimeout(() => {
                 pushLocalToCloud(false);
-            }, 800);
+            }, 300);
         }
 
         function sanitizeGoal(g) {
@@ -710,7 +712,8 @@
 
         function taskLegacyKey(st) {
             if (!st || !st.text) return "";
-            return `${st.text.toLowerCase()}|${st.goalIndex}|${st.subIndex === null ? "main" : st.subIndex}|${st.date}`;
+            const day = canonicalTaskDayKey(st.date);
+            return `${st.text.toLowerCase()}|${st.goalIndex}|${st.subIndex === null ? "main" : st.subIndex}|${day}`;
         }
 
         function mergeGoalsPreferLocal(localGoals, cloudGoals) {
@@ -788,7 +791,8 @@
             }
 
             function keyOf(task) {
-                return `${task.text.toLowerCase()}|${task.goalIndex}|${task.subIndex === null ? "main" : task.subIndex}|${task.date}`;
+                const day = canonicalTaskDayKey(task.date);
+                return `${task.text.toLowerCase()}|${task.goalIndex}|${task.subIndex === null ? "main" : task.subIndex}|${day}`;
             }
 
             function put(task) {
@@ -888,6 +892,37 @@
             const parsed = new Date(s);
             return isNaN(parsed.getTime()) ? null : parsed;
         }
+
+        /** One calendar day string for sync keys so "Thu Apr 2…" and "2026-04-02" match. */
+        function canonicalTaskDayKey(dateVal) {
+            if (dateVal == null || dateVal === "") return "";
+            const d = parseTaskDateFlexible(dateVal);
+            if (!d || isNaN(d.getTime())) return String(dateVal).trim();
+            const k = localYMDKey(d);
+            return k || String(dateVal).trim();
+        }
+
+        function normalizeStoredTombstoneKey(k) {
+            if (typeof k !== "string" || !k) return "";
+            const parts = k.split("|");
+            if (parts.length < 4) return k;
+            const dayRaw = parts[parts.length - 1];
+            const sub = parts[parts.length - 2];
+            const gi = parts[parts.length - 3];
+            const text = parts.slice(0, -3).join("|");
+            const day = canonicalTaskDayKey(dayRaw);
+            return `${text.toLowerCase()}|${gi}|${sub}|${day}`;
+        }
+
+        (function migrateDeletedTaskKeysToCanonicalDays() {
+            try {
+                const next = [...new Set((deletedTaskKeys || []).map(normalizeStoredTombstoneKey).filter(Boolean))];
+                if (JSON.stringify(next) !== JSON.stringify(deletedTaskKeys)) {
+                    deletedTaskKeys = next;
+                    localStorage.setItem("deleted_task_keys", JSON.stringify(next));
+                }
+            } catch (e) {}
+        })();
 
         function getTaskCompletionDateObj(task) {
             if (task.completedAt) {
@@ -1002,6 +1037,9 @@
             tasks.splice(i, 1);
             saveTasks();
             renderGoals();
+            if (supabaseClient && isOnline()) {
+                setTimeout(() => pushLocalToCloud(false), 120);
+            }
         }
         
         function toggleTask(i) { 
@@ -1194,8 +1232,9 @@
                 bucketKeyGetter = (d) => yearKeyLocal(d);
             }
 
-            let datasetsObj = {}; 
-            
+            let datasetsObj = {};
+            lineChartHoverTasks = goals.map(() => buckets.map(() => []));
+
             goals.forEach((g, idx) => {
                 datasetsObj[idx] = {
                     label: g.title,
@@ -1207,7 +1246,7 @@
                     pointHoverRadius: 8,
                     tension: 0.3, // smooth curves
                     fill: false,
-                    data: buckets.map(() => ({ y: 0, tasks: [] }))
+                    data: buckets.map(() => 0)
                 };
             });
 
@@ -1230,11 +1269,13 @@
                 const idx = bucketIndexByKey[key];
                 if (idx === undefined) return;
 
-                const pt = datasetsObj[gIdx].data[idx];
-                if (pt && typeof pt === "object" && "y" in pt) {
-                    pt.y += 1;
-                    pt.tasks.push(t.text || "");
-                    maxY = Math.max(maxY, pt.y);
+                const row = datasetsObj[gIdx].data;
+                if (Array.isArray(row) && idx >= 0 && idx < row.length) {
+                    row[idx] += 1;
+                    if (lineChartHoverTasks[gIdx] && lineChartHoverTasks[gIdx][idx]) {
+                        lineChartHoverTasks[gIdx][idx].push(t.text || "");
+                    }
+                    maxY = Math.max(maxY, row[idx]);
                 }
             });
 
@@ -1246,7 +1287,7 @@
                 chartInstance.data.labels = displayLabels;
                 chartInstance.data.datasets = datasetsInfo;
                 if (chartInstance.options) {
-                    chartInstance.options.parsing = { yAxisKey: "y" };
+                    if ("parsing" in chartInstance.options) delete chartInstance.options.parsing;
                     if (chartInstance.options.interaction) chartInstance.options.interaction.intersect = true;
                 }
                 if (chartInstance.options.scales && chartInstance.options.scales.y) {
@@ -1260,10 +1301,9 @@
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        parsing: { yAxisKey: 'y' },
                         interaction: { mode: 'nearest', axis: 'x', intersect: true },
                         scales: {
-                            x: { grid: { color: 'rgba(255,255,255,0.05)' } },
+                            x: { type: "category", grid: { color: 'rgba(255,255,255,0.05)' } },
                             y: { grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true, suggestedMax: ySuggestedMax, ticks: { stepSize: 1, color: '#9ca3af' } }
                         },
                         plugins: {
@@ -1276,11 +1316,16 @@
                                 boxPadding: 6,
                                 callbacks: {
                                     label: function(context) {
-                                        const raw = context.raw;
-                                        const pt = raw && typeof raw === "object" && "y" in raw ? raw : { y: context.parsed.y, tasks: [] };
-                                        const y = pt.y;
+                                        const y = context.parsed.y;
                                         if (y === 0 || y == null) return null;
-                                        const hoverTasks = Array.isArray(pt.tasks) ? pt.tasks : [];
+                                        const di = context.datasetIndex;
+                                        const bi = context.dataIndex;
+                                        const hoverTasks =
+                                            lineChartHoverTasks &&
+                                            lineChartHoverTasks[di] &&
+                                            lineChartHoverTasks[di][bi]
+                                                ? lineChartHoverTasks[di][bi]
+                                                : [];
                                         let lines = [`${context.dataset.label} (${y})`];
                                         hoverTasks.forEach((task) => {
                                             let snippet = task.length > 40 ? task.substring(0, 40) + "..." : task;
