@@ -90,7 +90,7 @@
             <button onclick="runFullBidirectionalSync({ showFeedback: true, force: true })" class="px-3 py-2 text-xs font-semibold rounded-lg bg-blue-900/30 border border-blue-700/60 text-blue-300 hover:bg-blue-800/30 transition">Sync now</button>
             <button onclick="pushLocalToCloud(true)" class="px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-900/30 border border-emerald-700/60 text-emerald-300 hover:bg-emerald-800/30 transition" title="Upload local data only">Upload only</button>
         </div>
-        <p class="text-[11px] text-gray-500 mb-6 max-w-3xl leading-relaxed">Progress is saved in this browser first, then synced automatically (merge from cloud + upload) about every 20s and when you come back to this tab or go online.</p>
+        <p class="text-[11px] text-gray-500 mb-6 max-w-3xl leading-relaxed">Every change saves here first, then uploads to your database (a moment later). Use <span class="text-gray-400">Sync now</span> only if you use another device and need the latest from the cloud merged in.</p>
 
         <!-- Dynamic Data Line Graph -->
         <div class="glass rounded-3xl p-6 mb-12 border border-gray-800/80 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
@@ -171,12 +171,15 @@
 
         let supabaseClient = null;
         let cloudSyncTimeout = null;
+        let cloudPushTail = Promise.resolve();
         let isApplyingCloudData = false;
         let hasUnsyncedChanges = false;
         let cloudSyncInFlight = false;
         let lastFullSyncAt = 0;
-        const AUTO_SYNC_INTERVAL_MS = 20000;
+        /** Retry failed / pending uploads without pulling from cloud. */
+        const CLOUD_PUSH_RETRY_MS = 20000;
         const FULL_SYNC_THROTTLE_MS = 8000;
+        const CLOUD_SAVE_DEBOUNCE_MS = 150;
 
         function hexToHsl(hex) {
             let c = hex.replace('#', '');
@@ -469,7 +472,7 @@
             localStorage.setItem("supabase_url", url);
             localStorage.setItem("supabase_anon_key", key);
             initCloudClient();
-            alert("Cloud config saved. Sync runs automatically; use Sync now if you want it immediately.");
+            alert("Cloud config saved. Changes upload to the database automatically after each edit.");
         }
 
         async function pushLocalToCloud(showFeedback = false) {
@@ -660,6 +663,7 @@
             await runFullBidirectionalSync({ showFeedback, force: true });
         }
 
+        /** After any local save: debounce, then upsert the full row to Supabase (no automatic pull). */
         function scheduleCloudAutosync() {
             if (!supabaseClient || isApplyingCloudData) return;
             hasUnsyncedChanges = true;
@@ -670,8 +674,11 @@
             }
             if (cloudSyncTimeout) clearTimeout(cloudSyncTimeout);
             cloudSyncTimeout = setTimeout(() => {
-                pushLocalToCloud(false);
-            }, 300);
+                cloudSyncTimeout = null;
+                cloudPushTail = cloudPushTail
+                    .then(() => pushLocalToCloud(false))
+                    .catch(() => {});
+            }, CLOUD_SAVE_DEBOUNCE_MS);
         }
 
         function sanitizeGoal(g) {
@@ -1037,9 +1044,6 @@
             tasks.splice(i, 1);
             saveTasks();
             renderGoals();
-            if (supabaseClient && isOnline()) {
-                setTimeout(() => pushLocalToCloud(false), 120);
-            }
         }
         
         function toggleTask(i) { 
@@ -1488,7 +1492,7 @@
 
         window.addEventListener("online", () => {
             if (!supabaseClient) return;
-            runFullBidirectionalSync({ showFeedback: false, force: true });
+            void pushLocalToCloud(false);
         });
 
         window.addEventListener("offline", () => {
@@ -1496,14 +1500,15 @@
         });
 
         document.addEventListener("visibilitychange", () => {
-            if (document.visibilityState === "visible" && supabaseClient && isOnline()) {
-                runFullBidirectionalSync({ showFeedback: false, force: true });
+            if (document.visibilityState === "visible" && supabaseClient && isOnline() && (hasPendingSync() || hasUnsyncedChanges)) {
+                void pushLocalToCloud(false);
             }
         });
 
         setInterval(() => {
-            runFullBidirectionalSync({ showFeedback: false, force: false });
-        }, AUTO_SYNC_INTERVAL_MS);
+            if (!supabaseClient || !isOnline() || isApplyingCloudData) return;
+            if (hasPendingSync() || hasUnsyncedChanges) void pushLocalToCloud(false);
+        }, CLOUD_PUSH_RETRY_MS);
 
         setTimeout(() => {
             runFullBidirectionalSync({ showFeedback: false, force: true });
