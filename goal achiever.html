@@ -1399,7 +1399,9 @@
                     pointHoverRadius: 8,
                     tension: 0.3, // smooth curves
                     fill: false,
-                    data: buckets.map(() => 0)
+                    spanGaps: false,
+                    // null = no completions that bucket — no point/segment (avoids flat zero lines)
+                    data: buckets.map(() => null)
                 };
             });
 
@@ -1424,11 +1426,12 @@
 
                 const row = datasetsObj[gIdx].data;
                 if (Array.isArray(row) && idx >= 0 && idx < row.length) {
-                    row[idx] += 1;
+                    const next = (row[idx] ?? 0) + 1;
+                    row[idx] = next;
                     if (lineChartHoverTasks[gIdx] && lineChartHoverTasks[gIdx][idx]) {
                         lineChartHoverTasks[gIdx][idx].push(t.text || "");
                     }
-                    maxY = Math.max(maxY, row[idx]);
+                    maxY = Math.max(maxY, next);
                 }
             });
 
@@ -1467,6 +1470,10 @@
                                 bodyFont: { size: 13, family: 'Inter' },
                                 padding: 12,
                                 boxPadding: 6,
+                                filter: function (item) {
+                                    const v = item.parsed.y;
+                                    return v != null && !isNaN(v) && v > 0;
+                                },
                                 callbacks: {
                                     label: function(context) {
                                         const y = context.parsed.y;
