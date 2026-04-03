@@ -1080,6 +1080,20 @@
             return null;
         }
 
+        /** Stable YYYY-MM-DD for daily chart buckets (same key for building axis + counting). */
+        function chartCompletionDayKey(task) {
+            if (!task || !task.done) return null;
+            let cd = getTaskCompletionDateObj(task);
+            if (!cd || isNaN(cd.getTime())) {
+                if (task.completedDate) cd = parseTaskDateFlexible(task.completedDate);
+            }
+            if (!cd || isNaN(cd.getTime())) {
+                if (task.date) cd = parseTaskDateFlexible(task.date);
+            }
+            if (!cd || isNaN(cd.getTime())) return null;
+            return localYMDKey(cd);
+        }
+
         function resolveGoalIndex(task) {
             const g = task.goalIndex;
             if (g === undefined || g === null) return -1;
@@ -1357,17 +1371,10 @@
             let bucketKeyGetter = () => "";
 
             if (granularity === "daily") {
-                let startIso = localStorage.getItem("lucid_daily_range_start");
-                if (!startIso) startIso = getDefaultDailyRangeStartISO();
                 const dayKeys = new Set();
                 (tasks || []).forEach((t) => {
-                    if (!t.done) return;
-                    const cd = getTaskCompletionDateObj(t);
-                    if (!cd || isNaN(cd.getTime())) return;
-                    const k = localYMDKey(cd);
-                    if (!k) return;
-                    if (!ymdKeyInDailyWindow(k, startIso, LUCID_DAILY_RANGE_DAYS)) return;
-                    dayKeys.add(k);
+                    const k = chartCompletionDayKey(t);
+                    if (k) dayKeys.add(k);
                 });
                 const sorted = Array.from(dayKeys).sort();
                 sorted.forEach((k) => {
@@ -1449,9 +1456,14 @@
                 const gIdx = safeGoalIndexForChart(resolveGoalIndex(t));
                 if (gIdx < 0 || !goals[gIdx] || !datasetsObj[gIdx]) return;
 
-                const completedObj = getTaskCompletionDateObj(t);
-                if (!completedObj || isNaN(completedObj.getTime())) return;
-                const key = bucketKeyGetter(completedObj);
+                let key = null;
+                if (granularity === "daily") {
+                    key = chartCompletionDayKey(t);
+                } else {
+                    const completedObj = getTaskCompletionDateObj(t);
+                    if (!completedObj || isNaN(completedObj.getTime())) return;
+                    key = bucketKeyGetter(completedObj);
+                }
                 if (key == null) return;
                 const idx = bucketIndexByKey[key];
                 if (idx === undefined) return;
