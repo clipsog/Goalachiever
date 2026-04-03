@@ -99,7 +99,7 @@
             <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                 <h3 class="text-gray-400 text-xs font-bold tracking-widest uppercase flex items-center gap-2">
                     <i data-lucide="trending-up" class="w-4 h-4 text-emerald-400"></i> Trajectory (hover points)
-                </h3>
+            </h3>
                 <div class="flex flex-wrap items-center gap-2">
                     <label class="text-[10px] uppercase tracking-wider text-gray-500">Columns</label>
                     <select id="layoutColumns" onchange="setLayoutColumns(this.value)" class="bg-gray-900/80 border border-gray-700 text-gray-200 text-xs font-semibold rounded-lg px-2 py-2 outline-none focus:border-gray-500" title="Goal cards per row (desktop)">
@@ -879,6 +879,23 @@
             const day = d.getDate();
             return `${y}-${String(mo).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
         }
+
+        /** Daily chart range filter: YYYY-MM-DD string vs range start + day count (inclusive). */
+        function ymdKeyInDailyWindow(ymdKey, startIso, dayCount) {
+            if (!ymdKey || !startIso) return false;
+            const p = ymdKey.split("-");
+            if (p.length !== 3) return false;
+            const [y, m, d] = p.map((x) => parseInt(x, 10));
+            if (isNaN(y) || isNaN(m) || isNaN(d)) return false;
+            const t = new Date(y, m - 1, d, 0, 0, 0, 0);
+            const ps = startIso.split("-").map((x) => parseInt(x, 10));
+            if (ps.length !== 3) return false;
+            const start = new Date(ps[0], ps[1] - 1, ps[2], 0, 0, 0, 0);
+            const end = new Date(start);
+            end.setDate(end.getDate() + dayCount - 1);
+            return t >= start && t <= end;
+        }
+
         function weekStartLocal(dateVal) {
             const s = new Date(dateVal);
             if (isNaN(s.getTime())) return null;
@@ -1175,7 +1192,7 @@
             renderGoals();
         }
         
-        function toggleTask(i) {
+        function toggleTask(i) { 
             if (!tasks[i].done) {
                 const pre = tasks[i].blockedByTid;
                 if (pre) {
@@ -1186,7 +1203,7 @@
                     }
                 }
             }
-            tasks[i].done = !tasks[i].done;
+            tasks[i].done = !tasks[i].done; 
             if(tasks[i].done) {
                 tasks[i].completedDate = currentDate;
                 tasks[i].completedAt = getCompletionISOForCurrentDate();
@@ -1202,7 +1219,7 @@
         function updateChart() {
             syncDailyChartControlsVisibility();
             const ctx = document.getElementById('velocityChart').getContext('2d');
-
+            
             const granularity = (document.getElementById("chartGranularity") || {}).value || "daily";
             const baseDate = new Date(currentDate);
             const dailyInp = document.getElementById("dailyChartRangeStart");
@@ -1342,14 +1359,21 @@
             if (granularity === "daily") {
                 let startIso = localStorage.getItem("lucid_daily_range_start");
                 if (!startIso) startIso = getDefaultDailyRangeStartISO();
-                const parts = startIso.split("-").map((x) => parseInt(x, 10));
-                const rangeStart = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
-                for (let i = 0; i < LUCID_DAILY_RANGE_DAYS; i++) {
-                    const d = new Date(rangeStart);
-                    d.setDate(rangeStart.getDate() + i);
-                    d.setHours(0, 0, 0, 0);
-                    buckets.push(d);
-                }
+                const dayKeys = new Set();
+                (tasks || []).forEach((t) => {
+                    if (!t.done) return;
+                    const cd = getTaskCompletionDateObj(t);
+                    if (!cd || isNaN(cd.getTime())) return;
+                    const k = localYMDKey(cd);
+                    if (!k) return;
+                    if (!ymdKeyInDailyWindow(k, startIso, LUCID_DAILY_RANGE_DAYS)) return;
+                    dayKeys.add(k);
+                });
+                const sorted = Array.from(dayKeys).sort();
+                sorted.forEach((k) => {
+                    const seg = k.split("-").map((x) => parseInt(x, 10));
+                    buckets.push(new Date(seg[0], seg[1] - 1, seg[2], 0, 0, 0, 0));
+                });
                 bucketFormatter = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                 bucketKeyGetter = (d) => localYMDKey(d);
             } else if (granularity === "weekly") {
@@ -1385,9 +1409,17 @@
                 bucketKeyGetter = (d) => yearKeyLocal(d);
             }
 
+            if (granularity === "daily" && buckets.length === 0) {
+                if (chartInstance) {
+                    chartInstance.destroy();
+                    chartInstance = null;
+                }
+                return;
+            }
+
             let datasetsObj = {};
             lineChartHoverTasks = goals.map(() => buckets.map(() => []));
-
+            
             goals.forEach((g, idx) => {
                 datasetsObj[idx] = {
                     label: g.title,
@@ -1577,8 +1609,8 @@
 
                     const pre = t.blockedByTid ? taskByTid(t.blockedByTid) : null;
                     const blockedPending = !!(pre && !pre.done);
-
-                    let td = document.createElement("div");
+                    
+                    let td = document.createElement("div"); 
                     td.className = "group flex items-start gap-2 p-3.5 bg-gray-900/80 rounded-xl border border-gray-800/80 hover:border-gray-600 transition shadow-sm";
                     td.style.borderColor = t.done ? accentColor + "80" : "";
 
@@ -1611,8 +1643,8 @@
                         td.classList.add("opacity-60");
                     };
                     grip.ondragend = () => td.classList.remove("opacity-60");
-
-                    let check = document.createElement("input");
+                    
+                    let check = document.createElement("input"); 
                     check.type = "checkbox";
                     check.className = "custom-checkbox mt-0.5";
                     check.checked = t.done;
