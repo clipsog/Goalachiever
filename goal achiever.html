@@ -1819,12 +1819,28 @@
 
                     if (!t.done && t.date !== currentDate && new Date(t.date) < new Date(currentDate)) {
                         let badge = document.createElement("span");
-                        badge.innerText = "OVERDUE";
-                        badge.className = "ml-2 text-[10px] tracking-widest font-bold bg-red-900/40 text-red-500 px-2 py-0.5 rounded border border-red-800 uppercase";
+                        badge.innerText = t.overdueReason ? "OVERDUE (Reason Logged)" : "OVERDUE (Add Reason)";
+                        badge.className = "ml-2 cursor-pointer text-[10px] tracking-widest font-bold bg-red-900/40 hover:bg-red-800/80 transition-colors text-red-500 px-2 py-0.5 rounded border border-red-800 uppercase";
+                        badge.onclick = (e) => {
+                            e.stopPropagation();
+                            let reason = prompt("Why haven't you completed this yet?", t.overdueReason || "");
+                            if (reason !== null) {
+                                t.overdueReason = reason.trim();
+                                saveTasks();
+                                renderGoals();
+                            }
+                        };
                         span.appendChild(badge);
                     }
 
                     spanContent.appendChild(span);
+
+                    if (!t.done && t.date !== currentDate && new Date(t.date) < new Date(currentDate) && t.overdueReason) {
+                        let reasonDiv = document.createElement("div");
+                        reasonDiv.className = "text-[11px] text-red-400/80 mt-1.5 italic border-l-2 border-red-900/50 pl-2 font-normal leading-snug";
+                        reasonDiv.innerText = "Reason: " + t.overdueReason;
+                        spanContent.appendChild(reasonDiv);
+                    }
                     if (t.blockedByTid && pre) {
                         let dep = document.createElement("div");
                         dep.className = "text-[10px] text-amber-400/95 mt-1.5 font-medium leading-snug";
