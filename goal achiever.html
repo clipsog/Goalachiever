@@ -128,7 +128,7 @@
         </div>
 
         <!-- Add Goal Input -->
-        <div class="glass rounded-2xl p-2 pl-4 mb-10 flex gap-4 items-center border border-gray-800 focus-within:border-gray-500 transition-colors shadow-xl">
+        <div class="glass rounded-2xl p-2 pl-4 mb-4 flex gap-4 items-center border border-gray-800 focus-within:border-gray-500 transition-colors shadow-xl">
             <i data-lucide="target" class="w-6 h-6 text-gray-500"></i>
             <input type="text" id="goalInput" placeholder="New goal…" 
                 class="flex-1 bg-transparent border-none outline-none text-xl font-semibold text-white placeholder-gray-700"
@@ -136,6 +136,11 @@
             <button onclick="addGoal()" class="bg-white text-black px-8 py-4 rounded-xl font-bold hover:bg-gray-200 transition shadow-[0_0_20px_rgba(255,255,255,0.2)] flex items-center gap-2">
                 Add <i data-lucide="plus" class="w-5 h-5"></i>
             </button>
+        </div>
+
+        <div id="unattachedPrayersContainer" class="mb-10 hidden glass p-4 rounded-2xl border border-purple-900/30">
+            <h3 class="text-xs font-bold text-gray-400 mb-3 tracking-widest uppercase flex items-center gap-2"><i data-lucide="box" class="w-4 h-4 text-purple-400"></i> Ecosystem: Unattached Requests</h3>
+            <div id="unattachedPrayersList" class="flex flex-col gap-2"></div>
         </div>
 
         <div id="goalList" class="gap-8 items-start"></div>
@@ -321,6 +326,12 @@
 
         let goals = JSON.parse(localStorage.getItem("goals")) || [];
         let tasks = JSON.parse(localStorage.getItem("tasks")) || [];
+        let prayers = JSON.parse(localStorage.getItem("prayers")) || [];
+        
+        function savePrayers() {
+            localStorage.setItem("prayers", JSON.stringify(prayers));
+            scheduleCloudAutosync();
+        }
 
         let deletedTaskIds = [];
         try {
@@ -329,6 +340,7 @@
             deletedTaskIds = [];
         }
         if (!Array.isArray(deletedTaskIds)) deletedTaskIds = [];
+        deletedTaskIds = deletedTaskIds.map((id) => String(id));
 
         let deletedTaskKeys = [];
         try {
@@ -510,6 +522,7 @@
                 id: CLOUD_ROW_ID,
                 goals: goals,
                 tasks: tasks,
+                prayers: prayers,
                 deleted_task_ids: deletedTaskIds,
                 deleted_task_keys: deletedTaskKeys,
                 updated_at: new Date().toISOString()
@@ -520,6 +533,7 @@
                     id: CLOUD_ROW_ID,
                     goals: goals,
                     tasks: tasks,
+                    prayers: prayers,
                     deleted_task_ids: deletedTaskIds,
                     updated_at: new Date().toISOString()
                 };
@@ -530,6 +544,7 @@
                     id: CLOUD_ROW_ID,
                     goals: goals,
                     tasks: tasks,
+                    prayers: prayers,
                     updated_at: new Date().toISOString()
                 };
                 ({ error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" }));
@@ -555,7 +570,7 @@
         }
 
         function mergeDeletedIdArrays(a, b) {
-            return [...new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])])];
+            return [...new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])].map(String))];
         }
 
         function mergeCloudRowIntoLocal(data) {
@@ -566,15 +581,24 @@
             const mergedDeletedKeys = mergeDeletedIdArrays(deletedTaskKeys, cloudDeletedKeys);
             const cloudGoals = Array.isArray(data.goals) ? data.goals : [];
             const cloudTasks = Array.isArray(data.tasks) ? data.tasks : [];
+            const cloudPrayers = Array.isArray(data.prayers) ? data.prayers : [];
             ensureEveryTaskHasTid();
             const mergedGoals = mergeGoalsPreferLocal(goals, cloudGoals);
+            
+            const mergedPrayers = [...cloudPrayers];
+            const prayerIds = new Set(cloudPrayers.map(p => p.id));
+            prayers.forEach(lp => {
+                if (!prayerIds.has(lp.id)) mergedPrayers.push(lp);
+            });
+
             const delSet = new Set(mergedDeleted);
             const delKeySet = new Set(mergedDeletedKeys);
             const mergedTasks = mergeTasks(tasks, cloudTasks, mergedGoals, cloudGoals, delSet, delKeySet);
-            const before = JSON.stringify({ goals, tasks, deletedTaskIds, deletedTaskKeys });
+            const before = JSON.stringify({ goals, tasks, prayers, deletedTaskIds, deletedTaskKeys });
             const after = JSON.stringify({
                 goals: mergedGoals,
                 tasks: mergedTasks,
+                prayers: mergedPrayers,
                 deletedTaskIds: mergedDeleted,
                 deletedTaskKeys: mergedDeletedKeys
             });
@@ -582,10 +606,12 @@
             isApplyingCloudData = true;
             goals = mergedGoals;
             tasks = mergedTasks;
+            prayers = mergedPrayers;
             deletedTaskIds = mergedDeleted;
             deletedTaskKeys = mergedDeletedKeys;
             localStorage.setItem("goals", JSON.stringify(goals));
             localStorage.setItem("tasks", JSON.stringify(tasks));
+            localStorage.setItem("prayers", JSON.stringify(prayers));
             persistDeletedTombstones();
             normalizeTaskCompletionMetadata();
             ensureEveryTaskHasTid();
@@ -618,7 +644,7 @@
                 let error;
                 let sel = await supabaseClient
                     .from(CLOUD_TABLE)
-                    .select("goals, tasks, deleted_task_ids, deleted_task_keys")
+                    .select("goals, tasks, prayers, deleted_task_ids, deleted_task_keys")
                     .eq("id", CLOUD_ROW_ID)
                     .maybeSingle();
                 data = sel.data;
@@ -626,7 +652,7 @@
                 if (error && /column|schema|deleted_task_ids|deleted_task_keys|does not exist/i.test(String(error.message || ""))) {
                     sel = await supabaseClient
                         .from(CLOUD_TABLE)
-                        .select("goals, tasks, deleted_task_ids")
+                        .select("goals, tasks, prayers, deleted_task_ids")
                         .eq("id", CLOUD_ROW_ID)
                         .maybeSingle();
                     data = sel.data;
@@ -635,7 +661,7 @@
                 if (error && /column|schema|deleted_task_ids|does not exist/i.test(String(error.message || ""))) {
                     sel = await supabaseClient
                         .from(CLOUD_TABLE)
-                        .select("goals, tasks")
+                        .select("goals, tasks, prayers")
                         .eq("id", CLOUD_ROW_ID)
                         .maybeSingle();
                     data = sel.data;
@@ -702,6 +728,7 @@
             if (!g || typeof g !== "object") return null;
             return {
                 title: String(g.title || "").trim(),
+                purpose: String(g.purpose || "").trim(),
                 color: g.color || goalColors[0],
                 subgoals: Array.isArray(g.subgoals)
                     ? g.subgoals.map((s) => ({
@@ -725,7 +752,8 @@
                 text: String(t.text || "").trim(),
                 goalIndex,
                 subIndex,
-                date: t.date || new Date().toDateString(),
+                // Prefer scheduled date, then completion day — avoids wrong "today" for cloud rows missing `date` (tombstones must match deletes).
+                date: t.date || t.completedDate || new Date().toDateString(),
                 done: !!t.done,
                 completedDate: t.completedDate || null,
                 completedAt: t.completedAt || null,
@@ -773,11 +801,11 @@
         }
 
         function mergeTasks(localTasks, cloudTasks, mergedGoals, cloudGoals, mergedDeletedSet, mergedDeletedKeySet) {
-            const tomb = mergedDeletedSet instanceof Set ? mergedDeletedSet : new Set(mergedDeletedSet || []);
-            const tombKeys =
-                mergedDeletedKeySet instanceof Set
-                    ? mergedDeletedKeySet
-                    : new Set(mergedDeletedKeySet || []);
+            const tombArr = mergedDeletedSet instanceof Set ? [...mergedDeletedSet] : mergedDeletedSet || [];
+            const tomb = new Set(tombArr.map(String));
+            const keyArr =
+                mergedDeletedKeySet instanceof Set ? [...mergedDeletedKeySet] : mergedDeletedKeySet || [];
+            const tombKeys = new Set(keyArr.map(String));
             const result = [];
             const seen = new Set();
             const cloudTitleByIndex = {};
@@ -791,7 +819,7 @@
             function normalizeTaskForMergedGoals(task, sourceCloud = false) {
                 const t = sanitizeTask(task);
                 if (!t || !t.text) return null;
-                if (t.tid && tomb.has(t.tid)) return null;
+                if (t.tid && tomb.has(String(t.tid))) return null;
                 if (!sourceCloud) {
                     return t;
                 }
@@ -845,7 +873,14 @@
                 if (normalized) put(normalized);
             });
 
-            return result;
+            // Safety net: cloud rows can slip through if tid/key shape differed from tombstones; never resurrect deletes.
+            return result.filter((t) => {
+                const st = sanitizeTask(t);
+                if (!st || !st.text) return false;
+                if (st.tid && tomb.has(String(st.tid))) return false;
+                if (tombKeys.has(keyOf(st))) return false;
+                return true;
+            });
         }
 
         function normalizeTaskCompletionMetadata() {
@@ -1159,10 +1194,11 @@
             let input = document.getElementById("goalInput"); let text = input.value.trim();
             if(!text) return;
             let color = goalColors[goals.length % goalColors.length];
-            goals.push({title: text, subgoals: [], color: color});
+            goals.push({title: text, purpose: "", subgoals: [], color: color});
             input.value = ""; saveGoals(); renderGoals();
         }
         function editGoal(i) { let t = prompt("Edit Directive:", goals[i].title); if(t) { goals[i].title=t; saveGoals(); renderGoals(); } }
+        function editGoalPurpose(i) { let p = prompt("Define the purpose of this goal (used by AI and ecosystem):", goals[i].purpose || ""); if(p !== null) { goals[i].purpose=p.trim(); saveGoals(); renderGoals(); } }
         function deleteGoal(i) { if(confirm("Terminate this directive? All tasks lost.")) { goals.splice(i,1); saveGoals(); renderGoals(); } }
         
         function addSubGoal(gIdx) { let t = prompt("Define Key Result (Sub-goal):"); if(t) { goals[gIdx].subgoals.push({text:t, history:[]}); saveGoals(); renderGoals(); } }
@@ -1199,11 +1235,14 @@
             // Always record legacy key: cloud copies often won't match our tid, but mergeTasks
             // only applies key tombstones to incoming cloud rows (not local), so new local tasks stay safe.
             if (lk && !deletedTaskKeys.includes(lk)) deletedTaskKeys.push(lk);
-            if (!deletedTaskIds.includes(t.tid)) deletedTaskIds.push(t.tid);
+            if (!deletedTaskIds.includes(String(t.tid))) deletedTaskIds.push(String(t.tid));
             persistDeletedTombstones();
             tasks.splice(i, 1);
             saveTasks();
             renderGoals();
+            if (supabaseClient && isOnline()) {
+                void pushLocalToCloud(false);
+            }
         }
         
         function toggleTask(i) { 
@@ -1566,9 +1605,60 @@
         }
 
         // RENDER LOGIC WITH HEAVY COLOR ACCENTS
+        function attachPrayerToGoal(prayerId) {
+            const goalNames = goals.map(g => g.title);
+            if (goalNames.length === 0) {
+                alert("Create a goal first.");
+                return;
+            }
+            const gText = goalNames.map((g, i) => `${i+1}. ${g}`).join("\n");
+            const idxStr = prompt("Enter the number of the goal to attach this request to:\n\n" + gText);
+            if (!idxStr) return;
+            const idx = parseInt(idxStr) - 1;
+            if (isNaN(idx) || idx < 0 || idx >= goals.length) {
+                alert("Invalid goal index.");
+                return;
+            }
+            const target = goals[idx];
+            const pr = prayers.find(x => x.id === prayerId);
+            if (pr) {
+                pr.goalTitle = target.title;
+                savePrayers();
+                renderGoals();
+            }
+        }
+
         function renderGoals() {
             let container = document.getElementById("goalList"); 
             container.innerHTML = "";
+
+            let unattachedContainer = document.getElementById("unattachedPrayersContainer");
+            let unattachedList = document.getElementById("unattachedPrayersList");
+            unattachedList.innerHTML = "";
+
+            let unattached = prayers.filter(p => !p.answered && !p.goalTitle);
+            if (unattached.length > 0) {
+                unattachedContainer.classList.remove("hidden");
+                unattached.forEach(p => {
+                    let pDiv = document.createElement("div");
+                    pDiv.className = "flex items-center justify-between p-2.5 bg-black/40 rounded-xl border border-purple-800/40";
+                    
+                    let pText = document.createElement("span");
+                    pText.className = "text-sm text-gray-300 flex-1";
+                    pText.innerText = p.text;
+                    
+                    let pAttachBtn = document.createElement("button");
+                    pAttachBtn.className = "text-[11px] font-semibold bg-purple-900/40 hover:bg-purple-800/60 border border-purple-700/50 text-purple-200 px-3 py-1.5 rounded-lg transition ml-3";
+                    pAttachBtn.innerText = "Attach to Goal";
+                    pAttachBtn.onclick = () => attachPrayerToGoal(p.id);
+
+                    pDiv.appendChild(pText);
+                    pDiv.appendChild(pAttachBtn);
+                    unattachedList.appendChild(pDiv);
+                });
+            } else {
+                unattachedContainer.classList.add("hidden");
+            }
 
             getGoalRenderOrder().forEach((gIdx) => {
                 const goal = goals[gIdx];
@@ -1584,13 +1674,20 @@
                 header.style.borderColor = goal.color + '30';
 
                 let titleArea = document.createElement("div");
-                titleArea.className = "flex items-start gap-3 flex-1 pr-4";
+                titleArea.className = "flex flex-col gap-1 flex-1 pr-4";
                 
                 let title = document.createElement("h2"); 
-                title.className = "text-xl font-bold tracking-tight text-white leading-tight"; 
+                title.className = "text-xl font-bold tracking-tight text-white leading-tight cursor-pointer hover:text-cyan-200 transition"; 
                 title.innerText = goal.title;
+                title.onclick = () => editGoal(gIdx);
                 
+                let purposeText = document.createElement("p");
+                purposeText.className = "text-sm text-gray-400 cursor-pointer hover:text-gray-300 transition italic leading-snug";
+                purposeText.innerText = goal.purpose ? goal.purpose : "(+) Click to define the purpose and meaning of this goal...";
+                purposeText.onclick = () => editGoalPurpose(gIdx);
+
                 titleArea.appendChild(title);
+                titleArea.appendChild(purposeText);
 
                 let actions = document.createElement("div");
                 actions.className = "flex space-x-1 shrink-0";
@@ -1614,6 +1711,47 @@
                 btnAddTask.onclick = () => addTask(gIdx, null);
                 taskInputWrapper.appendChild(taskInput); taskInputWrapper.appendChild(btnAddTask);
                 div.appendChild(taskInputWrapper);
+
+                let attachedPrayers = prayers.filter(p => !p.answered && p.goalTitle === goal.title);
+                if (attachedPrayers.length > 0) {
+                    let apContainer = document.createElement("div");
+                    apContainer.className = "flex flex-col gap-2 mb-4 bg-purple-900/10 p-3 rounded-xl border border-purple-800/30";
+                    let apTitle = document.createElement("h4");
+                    apTitle.className = "text-[10px] uppercase tracking-widest font-bold text-purple-400 mb-1 flex items-center gap-1";
+                    apTitle.innerHTML = `<i data-lucide="cloud-rain" class="w-3 h-3"></i> Attached Ecosystem Requests`;
+                    apContainer.appendChild(apTitle);
+                    
+                    attachedPrayers.forEach(p => {
+                        let row = document.createElement("div");
+                        row.className = "flex items-center justify-between";
+                        let pt = document.createElement("span");
+                        pt.className = "text-xs text-purple-200";
+                        pt.innerText = p.text;
+                        
+                        let acts = document.createElement("div");
+                        let untagBtn = document.createElement("button");
+                        untagBtn.innerText = "Untag";
+                        untagBtn.className = "text-[10px] text-gray-500 hover:text-red-400 mr-2";
+                        untagBtn.onclick = () => { p.goalTitle = null; savePrayers(); renderGoals(); };
+                        
+                        let convertBtn = document.createElement("button");
+                        convertBtn.innerText = "Create Task";
+                        convertBtn.className = "text-[10px] px-2 py-1 bg-purple-800/50 hover:bg-purple-700/60 text-purple-100 rounded";
+                        convertBtn.onclick = () => {
+                            let prpt = prompt("Add Task from Request:", p.text);
+                            if (prpt && prpt.trim()) {
+                                tasks.push({ text: prpt.trim(), goalIndex: gIdx, subIndex: null, date: currentDate, done: false, completedDate: null, tid: newTaskId() });
+                                saveTasks();
+                                renderGoals();
+                            }
+                        };
+                        
+                        acts.appendChild(untagBtn); acts.appendChild(convertBtn);
+                        row.appendChild(pt); row.appendChild(acts);
+                        apContainer.appendChild(row);
+                    });
+                    div.appendChild(apContainer);
+                }
 
                 const renderTaskLogic = (t, i, containerToAppend, accentColor = goal.color) => {
                     // Completed tasks stay visible on completion day, then disappear on later days.

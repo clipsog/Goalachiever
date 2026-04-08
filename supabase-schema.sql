@@ -5,6 +5,7 @@ create table if not exists public.goal_app_state (
   id text primary key,
   goals jsonb not null default '[]'::jsonb,
   tasks jsonb not null default '[]'::jsonb,
+  prayers jsonb not null default '[]'::jsonb,
   updated_at timestamptz not null default now()
 );
 
@@ -27,3 +28,5 @@ grant select, insert, update, delete on table public.goal_app_state to anon;
 alter table public.goal_app_state add column if not exists deleted_task_ids jsonb not null default '[]'::jsonb;
 -- Stable content keys (text|goal|sub|date) for tasks deleted before ids existed or when cloud has no tid
 alter table public.goal_app_state add column if not exists deleted_task_keys jsonb not null default '[]'::jsonb;
+-- Prayers
+alter table public.goal_app_state add column if not exists prayers jsonb not null default '[]'::jsonb;
