@@ -210,7 +210,12 @@
             const a = m.match(/find the ['"]([a-z0-9_]+)['"] column/i);
             if (a) return a[1];
             const b = m.match(/['"]([a-z0-9_]+)['"]\s+column of ['"][^'"]+['"]/i);
-            return b ? b[1] : "";
+            if (b) return b[1];
+            // Postgres 42703 via PostgREST, e.g. "column goal_app_state.prayers does not exist"
+            const c = m.match(/column\s+[\w.]+\.([a-z0-9_]+)\s+does not exist/i);
+            if (c) return c[1];
+            const d = m.match(/column\s+"([^"]+)"\s+does not exist/i);
+            return d ? d[1] : "";
         }
 
         function hexToHsl(hex) {
