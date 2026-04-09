@@ -202,6 +202,16 @@
         const CLOUD_PUSH_RETRY_MS = 20000;
         const FULL_SYNC_THROTTLE_MS = 8000;
         const CLOUD_SAVE_DEBOUNCE_MS = 150;
+        /** Omitted from REST when the DB row predates that column (PostgREST PGRST204). */
+        const OPTIONAL_GOAL_APP_STATE_COLUMNS = new Set(["prayers", "deleted_task_ids", "deleted_task_keys"]);
+
+        function missingColumnFromPostgrestError(message) {
+            const m = String(message || "");
+            const a = m.match(/find the ['"]([a-z0-9_]+)['"] column/i);
+            if (a) return a[1];
+            const b = m.match(/['"]([a-z0-9_]+)['"]\s+column of ['"][^'"]+['"]/i);
+            return b ? b[1] : "";
+        }
 
         function hexToHsl(hex) {
             let c = hex.replace('#', '');
@@ -528,25 +538,10 @@
                 updated_at: new Date().toISOString()
             };
             let { error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" });
-            if (error && /deleted_task_keys|column|schema/i.test(String(error.message || ""))) {
-                payload = {
-                    id: CLOUD_ROW_ID,
-                    goals: goals,
-                    tasks: tasks,
-                    prayers: prayers,
-                    deleted_task_ids: deletedTaskIds,
-                    updated_at: new Date().toISOString()
-                };
-                ({ error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" }));
-            }
-            if (error && /deleted_task_ids|column|schema/i.test(String(error.message || ""))) {
-                payload = {
-                    id: CLOUD_ROW_ID,
-                    goals: goals,
-                    tasks: tasks,
-                    prayers: prayers,
-                    updated_at: new Date().toISOString()
-                };
+            for (let attempt = 0; error && attempt < 8; attempt++) {
+                const col = missingColumnFromPostgrestError(error.message);
+                if (!col || !OPTIONAL_GOAL_APP_STATE_COLUMNS.has(col) || !(col in payload)) break;
+                delete payload[col];
                 ({ error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" }));
             }
             if (error) {
@@ -642,30 +637,19 @@
                 updateCloudStatus("Cloud: Syncing...", "warn");
                 let data;
                 let error;
-                let sel = await supabaseClient
-                    .from(CLOUD_TABLE)
-                    .select("goals, tasks, prayers, deleted_task_ids, deleted_task_keys")
-                    .eq("id", CLOUD_ROW_ID)
-                    .maybeSingle();
-                data = sel.data;
-                error = sel.error;
-                if (error && /column|schema|deleted_task_ids|deleted_task_keys|does not exist/i.test(String(error.message || ""))) {
-                    sel = await supabaseClient
+                let selectFields = ["goals", "tasks", "prayers", "deleted_task_ids", "deleted_task_keys"];
+                for (let attempt = 0; attempt < 8; attempt++) {
+                    const sel = await supabaseClient
                         .from(CLOUD_TABLE)
-                        .select("goals, tasks, prayers, deleted_task_ids")
+                        .select(selectFields.join(", "))
                         .eq("id", CLOUD_ROW_ID)
                         .maybeSingle();
                     data = sel.data;
                     error = sel.error;
-                }
-                if (error && /column|schema|deleted_task_ids|does not exist/i.test(String(error.message || ""))) {
-                    sel = await supabaseClient
-                        .from(CLOUD_TABLE)
-                        .select("goals, tasks, prayers")
-                        .eq("id", CLOUD_ROW_ID)
-                        .maybeSingle();
-                    data = sel.data;
-                    error = sel.error;
+                    if (!error) break;
+                    const col = missingColumnFromPostgrestError(error.message);
+                    if (!col || !OPTIONAL_GOAL_APP_STATE_COLUMNS.has(col) || !selectFields.includes(col)) break;
+                    selectFields = selectFields.filter((f) => f !== col);
                 }
                 if (data) {
                     if (data.deleted_task_ids === undefined) data.deleted_task_ids = [];
