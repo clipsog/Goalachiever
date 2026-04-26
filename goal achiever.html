@@ -1620,6 +1620,14 @@
         function renderGoals() {
             let container = document.getElementById("goalList"); 
             container.innerHTML = "";
+            const orderedGoalIndexes = getGoalRenderOrder();
+            const hasGoals = orderedGoalIndexes.length > 0;
+
+            let goalTabsBar = document.createElement("div");
+            goalTabsBar.className = "mb-6 flex flex-wrap gap-2";
+
+            let goalCardsHost = document.createElement("div");
+            goalCardsHost.className = "space-y-6";
 
             let unattachedContainer = document.getElementById("unattachedPrayersContainer");
             let unattachedList = document.getElementById("unattachedPrayersList");
@@ -1649,7 +1657,24 @@
                 unattachedContainer.classList.add("hidden");
             }
 
-            getGoalRenderOrder().forEach((gIdx) => {
+            if (hasGoals) {
+                orderedGoalIndexes.forEach((gIdx, orderIdx) => {
+                    const g = goals[gIdx];
+                    let tabBtn = document.createElement("button");
+                    tabBtn.type = "button";
+                    tabBtn.className = "goal-tab-btn px-3 py-2 rounded-xl text-xs font-semibold tracking-wide border transition";
+                    tabBtn.style.borderColor = g.color + "55";
+                    tabBtn.style.color = "#d1d5db";
+                    tabBtn.style.background = orderIdx === 0 ? g.color + "2a" : "rgba(10,10,10,0.55)";
+                    tabBtn.style.boxShadow = orderIdx === 0 ? `0 0 0 1px ${g.color}55 inset` : "";
+                    tabBtn.dataset.goalIndex = String(gIdx);
+                    tabBtn.innerText = g.title;
+                    goalTabsBar.appendChild(tabBtn);
+                });
+                container.appendChild(goalTabsBar);
+            }
+
+            orderedGoalIndexes.forEach((gIdx, orderIdx) => {
                 const goal = goals[gIdx];
                 let div = document.createElement("div"); 
                 // Massive color tint on the card background
@@ -1657,6 +1682,8 @@
                 div.style.borderTopColor = goal.color;
                 div.style.backgroundColor = goal.color + '05'; // 3% opacity of the specific color
                 div.style.setProperty('--goal-color', goal.color);
+                div.dataset.goalCard = String(gIdx);
+                div.style.display = orderIdx === 0 ? "" : "none";
 
                 let header = document.createElement("div"); 
                 header.className = "flex justify-between items-start mb-6 border-b pb-4";
@@ -1898,7 +1925,32 @@
                     div.appendChild(subgoalsContainer);
                 }
 
-                container.appendChild(div);
+                goalCardsHost.appendChild(div);
+            });
+            container.appendChild(goalCardsHost);
+
+            const tabButtons = container.querySelectorAll(".goal-tab-btn");
+            tabButtons.forEach((btn) => {
+                btn.onclick = () => {
+                    const targetGoalIdx = btn.dataset.goalIndex;
+                    tabButtons.forEach((b) => {
+                        const idx = parseInt(b.dataset.goalIndex || "-1", 10);
+                        const goalRef = goals[idx];
+                        b.style.background = "rgba(10,10,10,0.55)";
+                        b.style.boxShadow = "";
+                        b.style.color = "#d1d5db";
+                        if (goalRef) b.style.borderColor = goalRef.color + "55";
+                    });
+                    const selectedGoal = goals[parseInt(targetGoalIdx || "-1", 10)];
+                    if (selectedGoal) {
+                        btn.style.background = selectedGoal.color + "2a";
+                        btn.style.boxShadow = `0 0 0 1px ${selectedGoal.color}55 inset`;
+                        btn.style.color = "#ffffff";
+                    }
+                    container.querySelectorAll("[data-goal-card]").forEach((card) => {
+                        card.style.display = card.getAttribute("data-goal-card") === targetGoalIdx ? "" : "none";
+                    });
+                };
             });
             lucide.createIcons();
             applyLayoutColumns();
