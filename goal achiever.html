@@ -198,8 +198,10 @@
         let hasUnsyncedChanges = false;
         let cloudSyncInFlight = false;
         let lastFullSyncAt = 0;
+        let cloudReachabilityBackoffUntil = 0;
         /** Retry failed / pending uploads without pulling from cloud. */
         const CLOUD_PUSH_RETRY_MS = 20000;
+        const CLOUD_REACHABILITY_BACKOFF_MS = 120000;
         const FULL_SYNC_THROTTLE_MS = 8000;
         const CLOUD_SAVE_DEBOUNCE_MS = 150;
         /** Omitted from REST when the DB row predates that column (PostgREST PGRST204). */
@@ -216,6 +218,73 @@
             if (c) return c[1];
             const d = m.match(/column\s+"([^"]+)"\s+does not exist/i);
             return d ? d[1] : "";
+        }
+
+        function activeSupabaseRestUrl() {
+            return (normalizeSupabaseUrl(localStorage.getItem("supabase_url") || "") || BAKED_SUPABASE_URL).replace(/\/+$/, "");
+        }
+
+        function activeSupabaseAnonKey() {
+            return (localStorage.getItem("supabase_anon_key") || BAKED_SUPABASE_ANON_KEY || "").trim();
+        }
+
+        function isCloudReachabilityError(error) {
+            if (!error) return false;
+            const msg = String(error.message || (error.error && error.error.message) || "").toLowerCase();
+            const code = String(error.code || (error.error && error.error.code) || "").toLowerCase();
+            if (code === "econnrefused" || code === "enotfound" || code === "network") return true;
+            if (msg.includes("failed to fetch") || msg.includes("networkerror") || msg.includes("load failed")) return true;
+            if (msg.includes("name not resolved") || msg.includes("err_name_not_resolved")) return true;
+            if (error.name === "TypeError" && msg.includes("fetch")) return true;
+            return false;
+        }
+
+        function describeCloudSyncError(error) {
+            if (isCloudReachabilityError(error)) {
+                let host = "your Supabase project";
+                try {
+                    host = new URL(activeSupabaseRestUrl()).hostname;
+                } catch (e) { /* ignore */ }
+                return {
+                    reachability: true,
+                    status: "Cloud: Project Unreachable",
+                    detail:
+                        "Cannot reach " +
+                        host +
+                        " (DNS/network).\n\nYour Supabase project may be paused, deleted, or the URL is wrong.\n\n1. Open supabase.com/dashboard\n2. Restore the project if it is paused\n3. Settings → API → copy Project URL + anon public key\n4. Click Configure Cloud here and paste them"
+                };
+            }
+            const msg = String((error && error.message) || error.code || "unknown");
+            return { reachability: false, status: "Cloud: Sync Failed", detail: msg };
+        }
+
+        function markCloudReachabilityFailure() {
+            cloudReachabilityBackoffUntil = Date.now() + CLOUD_REACHABILITY_BACKOFF_MS;
+        }
+
+        function cloudSyncBackoffActive() {
+            return Date.now() < cloudReachabilityBackoffUntil;
+        }
+
+        async function touchSupabaseReachability() {
+            if (!supabaseClient) return true;
+            const url = activeSupabaseRestUrl();
+            const key = activeSupabaseAnonKey();
+            if (!url || !key) return false;
+            try {
+                const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+                const timer = ctrl ? setTimeout(() => ctrl.abort(), 10000) : null;
+                const r = await fetch(url + "/rest/v1/", {
+                    method: "GET",
+                    headers: { apikey: key, Authorization: "Bearer " + key },
+                    signal: ctrl ? ctrl.signal : undefined
+                });
+                if (timer) clearTimeout(timer);
+                return r.status < 500;
+            } catch (e) {
+                markCloudReachabilityFailure();
+                return false;
+            }
         }
 
         function hexToHsl(hex) {
@@ -474,6 +543,11 @@
             }
             try {
                 supabaseClient = window.supabase.createClient(url, key);
+                void touchSupabaseReachability().then((ok) => {
+                    if (!ok && supabaseClient) {
+                        updateCloudStatus("Cloud: Project Unreachable", "err");
+                    }
+                });
                 if (!isOnline()) updateCloudStatus("Cloud: Offline (Pending)", "warn");
                 else if (hasPendingSync()) updateCloudStatus("Cloud: Connected (Pending Push)", "warn");
                 else updateCloudStatus("Cloud: Connected", "ok");
@@ -486,7 +560,7 @@
             }
         }
 
-        function configureCloudSync() {
+        async function configureCloudSync() {
             const currentUrl = localStorage.getItem("supabase_url") || BAKED_SUPABASE_URL;
             const currentKey = localStorage.getItem("supabase_anon_key") || "";
             let urlIn = prompt("Supabase Project URL (must start with https://):\nLeave as-is or paste: https://YOUR-PROJECT.supabase.co", currentUrl);
@@ -515,7 +589,13 @@
 
             localStorage.setItem("supabase_url", url);
             localStorage.setItem("supabase_anon_key", key);
+            cloudReachabilityBackoffUntil = 0;
             initCloudClient();
+            const reachable = await touchSupabaseReachability();
+            if (!reachable) {
+                alert("Saved, but that Supabase URL could not be reached.\n\nCheck the project is active in supabase.com/dashboard and the URL is correct.");
+                return;
+            }
             alert("Cloud config saved. Changes upload to the database automatically after each edit.");
         }
 
@@ -530,6 +610,11 @@
                 hasUnsyncedChanges = true;
                 updateCloudStatus("Cloud: Offline (Pending)", "warn");
                 if (showFeedback) alert("Offline now. Changes are saved locally and will auto-sync when online.");
+                return;
+            }
+            if (cloudSyncBackoffActive()) {
+                updateCloudStatus("Cloud: Project Unreachable", "err");
+                if (showFeedback) alert(describeCloudSyncError({ message: "Failed to fetch" }).detail);
                 return;
             }
             updateCloudStatus("Cloud: Syncing Up...", "warn");
@@ -550,19 +635,22 @@
                 ({ error } = await supabaseClient.from(CLOUD_TABLE).upsert(payload, { onConflict: "id" }));
             }
             if (error) {
-                console.error(error);
+                const desc = describeCloudSyncError(error);
+                console.error("Cloud push error:", error);
                 setPendingSync(true);
-                updateCloudStatus("Cloud: Push Failed", "err");
+                if (desc.reachability) markCloudReachabilityFailure();
+                updateCloudStatus(desc.reachability ? desc.status : "Cloud: Push Failed", "err");
                 if (showFeedback) {
                     const missingTable = error.code === "PGRST205" || /could not find the table/i.test(String(error.message || ""));
                     if (missingTable) {
                         alert("Database table missing. In Supabase → SQL Editor, run the file supabase-schema.sql from this project, then try Push again.");
                     } else {
-                        alert("Push failed: " + (error.message || error.code || "unknown") + "\n\nCheck RLS policies and that the table goal_app_state exists.");
+                        alert(desc.detail + (desc.reachability ? "" : "\n\nCheck RLS policies and that the table goal_app_state exists."));
                     }
                 }
                 return;
             }
+            cloudReachabilityBackoffUntil = 0;
             setPendingSync(false);
             hasUnsyncedChanges = false;
             updateCloudStatus("Cloud: Synced", "ok");
@@ -634,6 +722,11 @@
                 if (showFeedback) alert("Offline. Your changes stay on this device and will sync when you are online.");
                 return;
             }
+            if (cloudSyncBackoffActive()) {
+                updateCloudStatus("Cloud: Project Unreachable", "err");
+                if (showFeedback) alert(describeCloudSyncError({ message: "Failed to fetch" }).detail);
+                return;
+            }
             const now = Date.now();
             if (!force && now - lastFullSyncAt < FULL_SYNC_THROTTLE_MS) return;
             if (cloudSyncInFlight) return;
@@ -661,9 +754,11 @@
                     if (data.deleted_task_keys === undefined) data.deleted_task_keys = [];
                 }
                 if (error) {
-                    console.error(error);
-                    updateCloudStatus("Cloud: Sync Failed", "err");
-                    if (showFeedback) alert("Sync failed: " + (error.message || error.code || "unknown"));
+                    const desc = describeCloudSyncError(error);
+                    console.error("Cloud sync error:", error);
+                    if (desc.reachability) markCloudReachabilityFailure();
+                    updateCloudStatus(desc.status, "err");
+                    if (showFeedback) alert(desc.detail);
                     return;
                 }
                 if (!data) {
@@ -673,6 +768,7 @@
                     if (showFeedback) alert("First sync: uploaded your local data to the cloud.");
                     return;
                 }
+                cloudReachabilityBackoffUntil = 0;
                 const changed = mergeCloudRowIntoLocal(data);
                 const needPush = changed || hasUnsyncedChanges || hasPendingSync();
                 if (needPush) {
@@ -1980,7 +2076,7 @@
         });
 
         setInterval(() => {
-            if (!supabaseClient || !isOnline() || isApplyingCloudData) return;
+            if (!supabaseClient || !isOnline() || isApplyingCloudData || cloudSyncBackoffActive()) return;
             if (hasPendingSync() || hasUnsyncedChanges) void pushLocalToCloud(false);
         }, CLOUD_PUSH_RETRY_MS);
 
